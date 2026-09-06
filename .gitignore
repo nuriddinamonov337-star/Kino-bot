@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.venv/
+venv/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data and temporary video files
+data/
+logs/
+tmp/
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.srt
+*.log
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Legacy frontend dependencies (not used by the Python bot)
+node_modules/
+dist/
