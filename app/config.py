@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     premium_weekly_price: int = 10000
     premium_monthly_price: int = 15000
     admin_contact_username: str | None = None
+    card_number: SecretStr | None = None
+    card_owner: str | None = None
+    premium_week_price: int = 10000
+    premium_month_price: int = 15000
+    subscriber_100_price: int = 15000
+    subscriber_500_price: int = 70000
+    subscriber_1000_price: int = 130000
+    admin_username: str | None = None
 
     @field_validator("admin_ids", "required_channel_ids", mode="before")
     @classmethod
@@ -128,6 +136,31 @@ class Settings(BaseSettings):
                     merged.append(extra)
                     existing.append(extra.get_secret_value())
             self.aimlapi_keys = tuple(merged)
+        return self
+
+    @model_validator(mode="after")
+    def merge_payment_and_contact_settings(self) -> Settings:
+        """Support the current Railway variable names and older project names."""
+        if self.card_number is None:
+            self.card_number = self.premium_card_number
+        if self.premium_card_number is None:
+            self.premium_card_number = self.card_number
+        if not self.card_owner:
+            self.card_owner = self.premium_card_name
+        if not self.premium_card_name:
+            self.premium_card_name = self.card_owner
+        if self.premium_week_price == 10000 and self.premium_weekly_price != 10000:
+            self.premium_week_price = self.premium_weekly_price
+        if self.premium_weekly_price == 10000 and self.premium_week_price != 10000:
+            self.premium_weekly_price = self.premium_week_price
+        if self.premium_month_price == 15000 and self.premium_monthly_price != 15000:
+            self.premium_month_price = self.premium_monthly_price
+        if self.premium_monthly_price == 15000 and self.premium_month_price != 15000:
+            self.premium_monthly_price = self.premium_month_price
+        if not self.admin_username:
+            self.admin_username = self.admin_contact_username
+        if not self.admin_contact_username:
+            self.admin_contact_username = self.admin_username
         return self
 
     @property

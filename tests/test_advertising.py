@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.database.base import Base
 from app.database.models import AdvertisingStatus, AdvertisingType, User
 from app.keyboards.advertising import advertising_menu
+from app.config import Settings
 from app.services.advertising import (
     create_advertising_request,
     get_contact_handle,
@@ -53,6 +54,13 @@ def test_contact_handle_uses_configured_admin_username() -> None:
     assert get_contact_handle("@cinestream_admin") == "@cinestream_admin"
     assert get_contact_handle(None) is None
     assert get_contact_handle("") is None
+
+
+def test_advertising_prices_have_requested_defaults() -> None:
+    settings = Settings(bot_token="x", database_url="sqlite+aiosqlite://", _env_file=None)
+    assert settings.subscriber_100_price == 15000
+    assert settings.subscriber_500_price == 70000
+    assert settings.subscriber_1000_price == 130000
 
 
 @pytest.mark.asyncio

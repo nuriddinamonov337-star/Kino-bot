@@ -55,3 +55,24 @@ def test_numbered_aimlapi_keys_are_merged() -> None:
     )
     assert settings.database_url.startswith("postgresql+asyncpg://")
     assert settings.aimlapi_key_values == ("one", "two", "three")
+
+
+def test_railway_payment_and_advertising_variable_names_are_loaded() -> None:
+    settings = Settings(
+        bot_token="test-token",
+        database_url="sqlite+aiosqlite://",
+        card_number="9860 0601 2345 6789",
+        card_owner="JOHN DOE",
+        premium_week_price=10000,
+        premium_month_price=15000,
+        subscriber_100_price=15000,
+        subscriber_500_price=70000,
+        subscriber_1000_price=130000,
+        admin_username="Nuriddin_Amonov_006",
+        _env_file=None,
+    )
+    assert settings.card_number.get_secret_value() == "9860 0601 2345 6789"
+    assert settings.card_owner == "JOHN DOE"
+    assert settings.premium_weekly_price == 10000
+    assert settings.premium_monthly_price == 15000
+    assert settings.admin_contact_username == "Nuriddin_Amonov_006"

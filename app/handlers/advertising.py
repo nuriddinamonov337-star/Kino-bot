@@ -67,18 +67,18 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     settings = get_settings()
     if ad_type is AdvertisingType.SUBSCRIBERS:
         await query.edit_message_text(
-            "📢 Obunachi yig‘ish\n\nUshbu xizmat orqali sizga auditoriya va kanal a’zolari uchun obunachi yig‘ish imkoniyati haqida ma’lumot beriladi. Narx va shartlar keyinchalik admin tomonidan belgilanadi. Avtomatik to‘lov qilinmaydi.\n\nKanal nomini yuboring (255 belgigacha).",
+            f"📢 Obunachi yig‘ish\n\nKanal auditoriyasini kengaytirish xizmati. Avtomatik to‘lov qilinmaydi, so‘rov admin tomonidan ko‘rib chiqiladi.\n\n100 ta — {settings.subscriber_100_price:,} so‘m\n500 ta — {settings.subscriber_500_price:,} so‘m\n1000 ta — {settings.subscriber_1000_price:,} so‘m\n\nKanal nomini yuboring (255 belgigacha).",
             reply_markup=cancel(),
         )
         return TITLE
     if ad_type is AdvertisingType.CHANNELS:
         await query.edit_message_text(
-            "📡 Kanallarda reklama\n\nKanal reklama xizmatidan foydalanish haqida ma’lumot olasiz. Reklama so‘rovingiz adminlarga yuboriladi va ular ko‘rib chiqadi.\n\nReklama qilinadigan kanal nomini yuboring.",
+            "📡 Kanallarda reklama\n\nReklamangiz hamkor kanallarda joylashtiriladi. Narx kanal, auditoriya va joylashtirish muddatiga qarab admin tomonidan belgilanadi. So‘rov adminlarga yuboriladi.\n\nReklama qilinadigan kanal nomini yuboring.",
             reply_markup=cancel(),
         )
         return TITLE
     if ad_type is AdvertisingType.CONTACT:
-        contact = get_contact_handle(settings.admin_contact_username)
+        contact = get_contact_handle(settings.admin_username)
         body = (
             "👨‍💻 Admin bilan bog‘lanish\n\n"
             f"Admin bilan bog‘lanish uchun: {contact or 'admin kontakt ma’lum emas'}\n\n"
@@ -87,7 +87,7 @@ async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         await query.edit_message_text(body, reply_markup=cancel())
         return DETAILS
     await query.edit_message_text(
-        "📣 Botda reklama\n\nBot ichida reklama berish xizmatini tanladingiz. Reklama ma’lumotlarini yuboring, adminlar so‘rovni ko‘rib chiqadi.\n\nBotda reklama matnini yuboring (5–2000 belgi).",
+        f"📣 Botda reklama\n\nBot ichida reklama joylashtirish xizmati. Narx reklama hajmi va muddatiga qarab admin tomonidan belgilanadi.\n\nBotda reklama matnini yuboring (5–2000 belgi).",
         reply_markup=cancel(),
     )
     return DETAILS

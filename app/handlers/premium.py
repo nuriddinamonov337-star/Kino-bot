@@ -40,9 +40,9 @@ async def select_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await query.answer()
     plan = PaymentPlan.WEEKLY if query.data == "premium:plan:weekly" else PaymentPlan.MONTHLY
     settings, database = get_settings(), context.application.bot_data["database"]
-    if settings.premium_card_number is None or not settings.premium_card_name:
+    if settings.card_number is None or not settings.card_owner:
         logger.error("Premium card configuration is missing")
-        await query.edit_message_text("Premium to‘lov ma’lumotlari hozircha sozlanmagan.")
+        await query.edit_message_text("Karta ma’lumotlari hali sozlanmagan.")
         return ConversationHandler.END
     try:
         async with database.session() as session:
@@ -58,7 +58,7 @@ async def select_plan(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
     context.user_data["premium_payment_id"] = payment.id
     label, amount, _ = plan_details(plan, settings)
-    await query.edit_message_text(f"💳 To'lov uchun:\n\nTarif: {label}\nNarx: {amount:,} so'm\n\nKarta:\n{settings.premium_card_number.get_secret_value()}\n\nKarta egasi:\n{settings.premium_card_name}\n\nTo'lovni amalga oshirgach, chekni shu yerga yuboring.", reply_markup=receipt_keyboard())
+    await query.edit_message_text(f"💳 To‘lov uchun:\n\nTarif: {label}\nNarx: {amount:,} so‘m\n\nKarta:\n{settings.card_number.get_secret_value()}\n\nKarta egasi:\n{settings.card_owner}\n\nTo‘lovni amalga oshirgach, chekni shu yerga yuboring.", reply_markup=receipt_keyboard())
     return WAITING_RECEIPT
 
 

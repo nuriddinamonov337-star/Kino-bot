@@ -23,8 +23,8 @@ def is_premium_active(user: User, now: datetime | None = None) -> bool:
 
 def plan_details(plan: PaymentPlan, settings: Settings) -> tuple[str, int, timedelta]:
     if plan is PaymentPlan.WEEKLY:
-        return "1 hafta", settings.premium_weekly_price, timedelta(days=7)
-    return "1 oy", settings.premium_monthly_price, timedelta(days=30)
+        return "1 hafta", settings.premium_week_price, timedelta(days=7)
+    return "1 oy", settings.premium_month_price, timedelta(days=30)
 
 
 def plan_duration(plan: PaymentPlan) -> timedelta:
