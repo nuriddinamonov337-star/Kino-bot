@@ -26,8 +26,28 @@ class SubscriptionCheck:
         return not self.missing and not self.unavailable
 
 
-async def get_active_mandatory_channels(session: AsyncSession) -> list[MandatoryChannel]:
-    return list(await session.scalars(select(MandatoryChannel).where(MandatoryChannel.is_active.is_(True)).order_by(MandatoryChannel.created_at)))
+async def get_active_mandatory_channels(
+    session: AsyncSession, configured_ids: tuple[int, ...] = ()
+) -> list[MandatoryChannel]:
+    channels = list(
+        await session.scalars(
+            select(MandatoryChannel)
+            .where(MandatoryChannel.is_active.is_(True))
+            .order_by(MandatoryChannel.created_at)
+        )
+    )
+    existing_ids = {channel.chat_id for channel in channels}
+    for chat_id in configured_ids:
+        if chat_id not in existing_ids:
+            channels.append(
+                MandatoryChannel(
+                    chat_id=chat_id,
+                    title=f"Kanal {chat_id}",
+                    username=None,
+                    invite_url=None,
+                )
+            )
+    return channels
 
 
 async def check_mandatory_subscriptions(bot: Bot, user_id: int, channels: list[MandatoryChannel]) -> SubscriptionCheck:
@@ -40,6 +60,8 @@ async def check_mandatory_subscriptions(bot: Bot, user_id: int, channels: list[M
             logger.warning("Unable to verify membership in mandatory channel %s", channel.chat_id, exc_info=True)
             unavailable.append(channel)
             continue
-        if str(member.status) not in MEMBER_STATUSES:
+        status = getattr(member, "status", "")
+        status_value = getattr(status, "value", status)
+        if str(status_value).lower() not in MEMBER_STATUSES:
             missing.append(channel)
     return SubscriptionCheck(tuple(missing), tuple(unavailable))

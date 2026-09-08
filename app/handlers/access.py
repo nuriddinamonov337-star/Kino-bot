@@ -3,6 +3,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from app.config import get_settings
 from app.database.session import Database
 from app.keyboards import main_menu, mandatory_subscription_keyboard
 from app.services.subscriptions import check_mandatory_subscriptions, get_active_mandatory_channels
@@ -22,7 +23,9 @@ async def grant_or_request_subscription(update: Update, context: ContextTypes.DE
         if has_active_premium(user):
             await message.reply_text("Xush kelibsiz!", reply_markup=main_menu())
             return True
-        channels = await get_active_mandatory_channels(session)
+        channels = await get_active_mandatory_channels(
+            session, get_settings().required_channel_ids
+        )
 
     result = await check_mandatory_subscriptions(context.bot, telegram_user.id, channels)
     if result.is_subscribed:

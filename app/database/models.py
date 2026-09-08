@@ -13,6 +13,10 @@ from sqlalchemy.types import Uuid
 from app.database.base import Base
 
 
+def enum_values(enum_type: type[StrEnum]) -> list[str]:
+    return [item.value for item in enum_type]
+
+
 class PaymentPlan(StrEnum):
     WEEKLY = "weekly"
     MONTHLY = "monthly"
@@ -114,11 +118,15 @@ class Admin(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 class PremiumPayment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "premium_payments"
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    plan: Mapped[PaymentPlan] = mapped_column(Enum(PaymentPlan, name="payment_plan"), nullable=False)
+    plan: Mapped[PaymentPlan] = mapped_column(
+        Enum(PaymentPlan, name="payment_plan", values_callable=enum_values), nullable=False
+    )
     amount: Mapped[int] = mapped_column(Integer, nullable=False)
     receipt_file_id: Mapped[str | None] = mapped_column(String(512))
     status: Mapped[PaymentStatus] = mapped_column(
-        Enum(PaymentStatus, name="payment_status"), nullable=False, default=PaymentStatus.PENDING
+        Enum(PaymentStatus, name="payment_status", values_callable=enum_values),
+        nullable=False,
+        default=PaymentStatus.PENDING,
     )
     reviewed_by: Mapped[int | None] = mapped_column(BigInteger)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -133,7 +141,9 @@ class SubscriberCampaign(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     target_count: Mapped[int] = mapped_column(Integer, nullable=False)
     current_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[CampaignStatus] = mapped_column(
-        Enum(CampaignStatus, name="campaign_status"), nullable=False, default=CampaignStatus.PENDING
+        Enum(CampaignStatus, name="campaign_status", values_callable=enum_values),
+        nullable=False,
+        default=CampaignStatus.PENDING,
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -146,10 +156,10 @@ class AdvertisingRequest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
     ad_type: Mapped[AdvertisingType] = mapped_column(
-        Enum(AdvertisingType, name="advertising_type"), nullable=False
+        Enum(AdvertisingType, name="advertising_type", values_callable=enum_values), nullable=False
     )
     status: Mapped[AdvertisingStatus] = mapped_column(
-        Enum(AdvertisingStatus, name="advertising_status"),
+        Enum(AdvertisingStatus, name="advertising_status", values_callable=enum_values),
         nullable=False,
         default=AdvertisingStatus.PENDING,
     )
@@ -190,7 +200,9 @@ class ReelJob(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "reel_jobs"
     movie_id: Mapped[UUID] = mapped_column(ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[ReelJobStatus] = mapped_column(
-        Enum(ReelJobStatus, name="reel_job_status"), nullable=False, default=ReelJobStatus.PENDING
+        Enum(ReelJobStatus, name="reel_job_status", values_callable=enum_values),
+        nullable=False,
+        default=ReelJobStatus.PENDING,
     )
     error: Mapped[str | None] = mapped_column(Text)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

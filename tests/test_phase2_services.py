@@ -10,7 +10,7 @@ from app.database.base import Base
 from app.database.models import Admin, MandatoryChannel, Movie, User
 from app.services.movies import find_active_movie_by_code
 from app.services.permissions import is_admin
-from app.services.subscriptions import check_mandatory_subscriptions
+from app.services.subscriptions import check_mandatory_subscriptions, get_active_mandatory_channels
 from app.services.users import has_active_premium, register_or_update_user
 
 
@@ -69,6 +69,12 @@ async def test_mandatory_subscription_marks_missing_and_api_errors_as_not_verifi
     assert [channel.chat_id for channel in result.missing] == [-1002]
     assert [channel.chat_id for channel in result.unavailable] == [-1003]
     assert not result.is_subscribed
+
+
+@pytest.mark.asyncio
+async def test_configured_required_channels_are_added_to_database_channels(session) -> None:
+    channels = await get_active_mandatory_channels(session, (-100777,))
+    assert [channel.chat_id for channel in channels] == [-100777]
 
 
 @pytest.mark.asyncio

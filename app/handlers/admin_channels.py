@@ -36,8 +36,14 @@ async def channel_identifier(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return IDENTIFIER
     try:
         chat = await context.bot.get_chat(value if value.startswith("@") else int(value))
+        bot_user = await context.bot.get_me()
+        bot_member = await context.bot.get_chat_member(chat.id, bot_user.id)
     except TelegramError:
-        await message.reply_text("Kanal topilmadi. Bot kanalga admin qilib qo‘shilganini va qiymat to‘g‘riligini tekshiring.")
+        await message.reply_text("Kanal topilmadi yoki botning kanalni tekshirish huquqi yo‘q. Bot kanalga admin qilib qo‘shilganini tekshiring.")
+        return IDENTIFIER
+    bot_status = getattr(bot_member.status, "value", bot_member.status)
+    if str(bot_status).lower() not in {"administrator", "creator", "owner"}:
+        await message.reply_text("Bot kanalga admin qilib qo‘shilmagan. Avval botga admin huquqini bering.")
         return IDENTIFIER
     context.user_data["admin_channel_draft"] = {"chat_id": chat.id, "username": (chat.username or value.lstrip("@")) if value.startswith("@") else chat.username}
     await message.reply_text("Kanal nomini yuboring. (255 belgigacha)", reply_markup=cancel())
