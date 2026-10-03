@@ -9,10 +9,10 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
 from app.config import Settings
 from app.utils.sanitize import sanitize_error
+from app.video.downloader import DownloadError
+from app.video.downloader import download_http_source as _fetch_http_source
 
 logger = logging.getLogger(__name__)
 
@@ -44,14 +44,11 @@ def make_work_dir(root: Path) -> tempfile.TemporaryDirectory[str]:
 
 
 async def download_http_source(url: str, destination: Path, timeout: float = 300) -> None:
-    """Download a source URL supplied by the content owner. No access-control bypass."""
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        async with client.stream("GET", url) as response:
-            if response.status_code >= 400:
-                raise VideoProcessingError(f"Authorized source returned HTTP {response.status_code}")
-            with destination.open("wb") as handle:
-                async for chunk in response.aiter_bytes(1024 * 256):
-                    handle.write(chunk)
+    """Download an owner-supplied URL (validated, size-limited). No access-control bypass."""
+    try:
+        await _fetch_http_source(url, destination, timeout=timeout)
+    except DownloadError as exc:
+        raise VideoProcessingError(str(exc)) from exc
 
 
 async def probe_duration(ffprobe: str, path: Path) -> float:
@@ -159,8 +156,25 @@ async def extract_clip(ffmpeg: str, source: Path, start: float, end: float, dest
 
 
 async def render_vertical_reel(
-    settings: Settings, source: Path, srt_path: Path | None, destination: Path
+    settings: Settings,
+    source: Path,
+    srt_path: Path | None,
+    destination: Path,
+    face_center_x: float | None = None,
 ) -> None:
+    """Render a 9:16 reel; static centre crop unless ``face_center_x`` is given.
+
+    ``face_center_x`` is a normalised ``[0, 1]`` horizontal face centre for
+    this clip (see ``app.video.framing``). ``None`` keeps the exact legacy
+    static-crop behaviour. The import is local to avoid a module cycle.
+    """
+    if face_center_x is not None:
+        from app.video.framing import render_vertical_reel_with_tracking
+
+        await render_vertical_reel_with_tracking(
+            settings.ffmpeg_binary, source, srt_path, destination, face_track=face_center_x
+        )
+        return
     filters = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
     if srt_path is not None and srt_path.exists():
         escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")

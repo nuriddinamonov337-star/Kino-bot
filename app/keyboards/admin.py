@@ -18,6 +18,7 @@ def panel() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("💳 Premium to'lovlar", callback_data="adm:payments")],
             [InlineKeyboardButton("📣 Reklama so‘rovlari", callback_data="adm:ads")],
             [InlineKeyboardButton("🎞 Reel joblar", callback_data="adm:jobs:0")],
+            [InlineKeyboardButton("📤 Xabar yuborish", callback_data="adm:broadcast")],
             [InlineKeyboardButton("👥 Foydalanuvchilar", callback_data="adm:users")],
             [InlineKeyboardButton("📊 Statistika", callback_data="adm:stats")],
             [InlineKeyboardButton("👨‍💼 Adminlar", callback_data="adm:admins")],
@@ -71,6 +72,30 @@ def cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Bekor qilish", callback_data=CANCEL)]])
 
 
+def broadcast_targets() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("👤 Barcha foydalanuvchilarga", callback_data="adm:broadcast:target:users")],
+            [InlineKeyboardButton("📢 1-kanalga", callback_data="adm:broadcast:target:main")],
+            [InlineKeyboardButton("🎬 2-kanalga", callback_data="adm:broadcast:target:reels")],
+            [InlineKeyboardButton("📨 Hammasiga", callback_data="adm:broadcast:target:all")],
+            [InlineKeyboardButton("📝 Maxsus ID'larga", callback_data="adm:broadcast:target:custom")],
+            [InlineKeyboardButton("❌ Bekor qilish", callback_data=CANCEL)],
+        ]
+    )
+
+
+def broadcast_confirm() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Yuborish", callback_data="adm:broadcast:send"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data=CANCEL),
+            ]
+        ]
+    )
+
+
 def confirm_movie_delete(movie_id: UUID) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -101,7 +126,6 @@ def channel_menu() -> InlineKeyboardMarkup:
         [
             [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="adm:channel:add")],
             [InlineKeyboardButton("🗑 Kanalni o'chirish", callback_data="adm:channel:delete")],
-            [InlineKeyboardButton("📋 Kanallar ro'yxati", callback_data="adm:channel:list")],
             [InlineKeyboardButton("🔙 Orqaga", callback_data="adm:main")],
         ]
     )

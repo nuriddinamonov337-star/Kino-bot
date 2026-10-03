@@ -14,6 +14,7 @@ tenacity>=9.0,<10.0
 openai>=1.59,<2.0
 scenedetect[opencv]>=0.6.5,<1.0
 openai-whisper>=20240930
+yt-dlp>=2024.8,<2027.0
 
 # Quality and tests
 pytest>=8.3,<9.0

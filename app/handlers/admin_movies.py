@@ -1,18 +1,24 @@
 """Protected ConversationHandlers for movie creation and soft deletion."""
 
 import logging
-from urllib.parse import urlparse
+import tempfile
+from pathlib import Path
 
 from sqlalchemy.exc import IntegrityError
 from telegram import Update
+from telegram.error import TelegramError
 from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
 
+from app.config import get_settings
+from app.database.models import Movie
 from app.database.session import Database
 from app.handlers.admin_auth import admin_access
 from app.keyboards.admin import CANCEL, cancel, confirm_movie_delete, movie_menu, source_choice
 from app.queue import JobQueue
 from app.services.admin import create_movie, get_movie_by_code, movie_code_exists, soft_delete_movie
 from app.services.reels import create_reel_job_if_absent
+from app.utils.sanitize import sanitize_error
+from app.video.downloader import DownloadError, download_movie_source, validate_source_url
 
 logger = logging.getLogger(__name__)
 SOURCE, CODE, TITLE, DESCRIPTION, POSTER = range(5)
@@ -46,7 +52,7 @@ async def choose_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def choose_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await _allowed(update, context): return ConversationHandler.END
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("🔗 http/https URL yuboring. Video hozir yuklanmaydi, faqat metadata saqlanadi.", reply_markup=cancel())
+    await update.callback_query.edit_message_text("🔗 http/https URL yuboring. Video serverga yuklab olinadi va Telegram'ga yuklanadi (5 GB gacha).", reply_markup=cancel())
     return SOURCE
 
 
@@ -60,14 +66,62 @@ async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     return CODE
 
 
+# Bot API orqali bitta xabarda yuklash mumkin bo'lgan maksimal hajm.
+TELEGRAM_BOT_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024
+
+
 async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await _allowed(update, context): return ConversationHandler.END
     message = update.effective_message
-    url = (message.text or "").strip() if message else ""
-    if urlparse(url).scheme not in {"http", "https"} or not urlparse(url).netloc:
+    if message is None: return SOURCE
+    raw_url = (message.text or "").strip()
+    try:
+        url = validate_source_url(raw_url)
+    except DownloadError:
         await message.reply_text("Faqat to‘liq http/https URL yuboring.")
         return SOURCE
-    _draft(context)["source_url"] = url
+    progress = await message.reply_text("⏳ Video yuklanmoqda, iltimos kuting...")
+    tmp_dir = tempfile.TemporaryDirectory(prefix="movie-url-")
+    try:
+        destination = Path(tmp_dir.name) / "source.mp4"
+        await download_movie_source(url, destination)
+        size = destination.stat().st_size
+        draft = _draft(context)
+        draft["source_url"] = url
+        if size <= TELEGRAM_BOT_UPLOAD_LIMIT_BYTES:
+            await progress.edit_text("⏳ Telegram'ga yuklanmoqda...")
+            with destination.open("rb") as handle:
+                sent = await context.bot.send_video(
+                    chat_id=message.chat_id,
+                    video=handle,
+                    supports_streaming=True,
+                    caption="🎬 Tasdiqlash uchun yuklangan video.",
+                )
+            file_id = sent.video.file_id if sent.video else None
+            if file_id is None:
+                raise DownloadError("Telegram file_id qaytarmadi")
+            draft["telegram_file_id"] = file_id
+            await progress.edit_text(f"✅ Video qabul qilindi ({size // (1024 * 1024)} MB).")
+        else:
+            logger.info("URL video exceeds Bot API upload limit (%d bytes); keeping source_url only", size)
+            await progress.edit_text(
+                f"✅ Video serverga yuklandi ({size // (1024 * 1024)} MB). "
+                "Hajmi katta bo‘lgani uchun Telegram'ga yuklanmadi — worker qayta ishlashda URL dan oladi."
+            )
+    except DownloadError as exc:
+        logger.warning("URL movie download failed: %s", sanitize_error(str(exc)))
+        await progress.edit_text(f"❌ Video yuklanmadi: {exc}. Boshqa URL yuboring.")
+        return SOURCE
+    except TelegramError as exc:
+        logger.exception("Telegram upload failed for URL movie")
+        await progress.edit_text(f"❌ Telegram'ga yuklashda xatolik: {sanitize_error(str(exc))}. Qayta urinib ko‘ring.")
+        return SOURCE
+    except Exception:
+        logger.exception("Unexpected URL movie intake failure")
+        await progress.edit_text("❌ Kutilmagan xatolik yuz berdi. Qayta urinib ko‘ring.")
+        return SOURCE
+    finally:
+        tmp_dir.cleanup()
     await message.reply_text("Kino kodi? (faqat raqam, 20 belgigacha)", reply_markup=cancel())
     return CODE
 
@@ -110,6 +164,33 @@ async def receive_description(update: Update, context: ContextTypes.DEFAULT_TYPE
     return POSTER
 
 
+async def _publish_movie_to_main_channel(context: ContextTypes.DEFAULT_TYPE, *, code: str, title: str, description: str | None, poster_file_id: str | None, telegram_file_id: str | None) -> int | None:
+    """Post a saved movie to MAIN_CHANNEL. Returns message_id or None. Never raises."""
+    channel_id = get_settings().main_channel_id
+    if channel_id is None:
+        logger.warning("MAIN_CHANNEL_ID is not configured; skipping channel post for movie %s", code)
+        return None
+    caption = f"🎬 {title}\n🔢 Kod: {code}"
+    if description:
+        caption += f"\n📝 {description}"
+    caption = caption[:1024]
+    try:
+        if poster_file_id:
+            sent = await context.bot.send_photo(chat_id=channel_id, photo=poster_file_id, caption=caption)
+        elif telegram_file_id:
+            sent = await context.bot.send_video(chat_id=channel_id, video=telegram_file_id, caption=caption, supports_streaming=True)
+        else:
+            sent = await context.bot.send_message(chat_id=channel_id, text=caption)
+        logger.info("Movie %s posted to main channel (message_id=%s)", code, sent.message_id)
+        return sent.message_id
+    except TelegramError as exc:
+        logger.warning("Main channel post failed for movie %s: %s", code, sanitize_error(str(exc)))
+        return None
+    except Exception:
+        logger.exception("Unexpected main channel post failure for movie %s", code)
+        return None
+
+
 async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not await _allowed(update, context): return ConversationHandler.END
     message = update.effective_message
@@ -125,6 +206,7 @@ async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             async with session.begin():
                 movie = await create_movie(session, **draft)
                 job, created = await create_reel_job_if_absent(session, movie.id)
+                saved = {"id": movie.id, "code": movie.code, "title": movie.title, "description": movie.description, "poster_file_id": movie.poster_file_id, "telegram_file_id": movie.telegram_file_id}
     except IntegrityError:
         logger.exception("Movie creation duplicate or integrity failure")
         await message.reply_text("Bu kod allaqachon mavjud. Boshqa kod yuboring.")
@@ -141,6 +223,26 @@ async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     extra = " Reel job navbatga qo‘yildi." if created and queued else " Reel job PostgreSQL’da pending (Redis yo‘q yoki band)."
     if not created:
         extra = " Bu kino uchun Reel job allaqachon mavjud."
+    channel_message_id = await _publish_movie_to_main_channel(
+        context,
+        code=str(saved["code"]),
+        title=str(saved["title"]),
+        description=saved["description"],  # type: ignore[arg-type]
+        poster_file_id=saved["poster_file_id"],  # type: ignore[arg-type]
+        telegram_file_id=saved["telegram_file_id"],  # type: ignore[arg-type]
+    )
+    if channel_message_id is not None:
+        try:
+            async with database.session() as session:
+                async with session.begin():
+                    stored = await session.get(Movie, saved["id"])
+                    if stored is not None:
+                        stored.main_channel_message_id = channel_message_id
+        except Exception:
+            logger.warning("Movie %s saved but main_channel_message_id could not be stored", saved["code"])
+        extra += " Kanalga post yuborildi."
+    else:
+        extra += " ⚠️ Kanalga post yuborilmadi (logni tekshiring)."
     await message.reply_text(f"✅ Kino muvaffaqiyatli saqlandi.{extra}", reply_markup=movie_menu())
     return ConversationHandler.END
 

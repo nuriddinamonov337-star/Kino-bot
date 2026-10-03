@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -9,11 +10,13 @@ from uuid import UUID
 from telegram import Bot
 from telegram.error import TelegramError
 
-from app.ai.client import SCENE_SYSTEM_PROMPT, AimlApiClient, AimlApiError, parse_scene_analysis
+from app.ai.client import AimlApiClient, AimlApiError
 from app.config import Settings
 from app.database.models import Movie, ReelJob
 from app.database.session import Database
 from app.services.reels import get_movie, mark_job_completed, mark_job_failed, save_reel
+from app.utils.sanitize import sanitize_error
+from app.video.moments import select_moments
 from app.video.processing import (
     VideoProcessingError,
     detect_scenes,
@@ -22,7 +25,6 @@ from app.video.processing import (
     make_work_dir,
     probe_duration,
     render_vertical_reel,
-    scene_prompt_payload,
     transcribe_clip,
     write_srt,
 )
@@ -43,6 +45,7 @@ class ReelPipeline:
                 model=settings.aimlapi_model,
                 timeout=settings.aimlapi_timeout,
                 cooldown_seconds=settings.aimlapi_key_cooldown_seconds,
+                fallback_model=settings.aimlapi_fallback_model,
             )
 
     async def run_job(self, job_id: UUID) -> None:
@@ -72,10 +75,12 @@ class ReelPipeline:
                         max_backoff_seconds=self._settings.worker_retry_backoff_max_seconds,
                     )
             status = failed.status.value if failed else "failed"
-            await self._notify_admins(f"❌ Reel job {status}: {movie.title}.")
+            reason = sanitize_error(str(exc))[:300]
+            await self._notify_admins(f"❌ Reel job {status}: {movie.title}.\nSabab: {reason}")
 
     async def _process_movie(self, movie: Movie) -> int:
-        if self._ai is None:
+        strategy = (self._settings.reel_moment_strategy or "auto").lower()
+        if self._ai is None and strategy in ("metadata", "transcript"):
             raise AimlApiError("AIMLAPI keys are not configured")
         if self._settings.reels_channel_id is None:
             raise VideoProcessingError("REELS_CHANNEL_ID is not configured")
@@ -84,21 +89,19 @@ class ReelPipeline:
             source = Path(work.name) / "source.mp4"
             await self._obtain_source(movie, source)
             duration = await probe_duration(self._settings.ffprobe_binary, source)
+            face_track = await self._maybe_build_face_track(source)
             scenes = detect_scenes(source)
-            analysis = await self._ai.complete_json(
-                system=SCENE_SYSTEM_PROMPT,
-                user=(
-                    f"Movie title: {movie.title}\nDuration seconds: {duration:.2f}\n"
-                    f"{scene_prompt_payload(scenes)}\n"
-                    "Return JSON for the most engaging 15-30 second moments."
-                ),
-            )
-            selected = parse_scene_analysis(
-                analysis,
-                max_scenes=self._settings.reel_max_per_movie,
+            transcript = await self._maybe_transcribe_full(source, duration, strategy)
+            selected = await select_moments(
+                scenes,
+                duration=duration,
+                max_count=self._settings.reel_max_per_movie,
+                strategy=strategy,
+                ai_complete=self._ai.complete_json if self._ai else None,
+                transcript=transcript,
+                title=movie.title,
                 min_seconds=self._settings.reel_min_seconds,
                 max_seconds=self._settings.reel_max_seconds,
-                video_duration=duration,
             )
             created = 0
             for index, scene in enumerate(selected, start=1):
@@ -113,7 +116,8 @@ class ReelPipeline:
                         write_srt(segments, srt_path)
                 except VideoProcessingError:
                     logger.warning("Whisper failed for one clip; continuing without subtitles")
-                await render_vertical_reel(self._settings, clip, srt_path, vertical)
+                face_center = face_track.center_for(scene.start, scene.end) if face_track else None
+                await render_vertical_reel(self._settings, clip, srt_path, vertical, face_center_x=face_center)
                 caption = f"{movie.title}\n{scene.reason}"
                 with vertical.open("rb") as handle:
                     message = await self._bot.send_video(
@@ -155,6 +159,41 @@ class ReelPipeline:
             await download_http_source(movie.source_url, destination)
             return
         raise VideoProcessingError("Movie has no authorized Telegram file or owner-supplied URL")
+
+    async def _maybe_build_face_track(self, source: Path):
+        """Build a face-centre track when enabled; ``None`` means static crop."""
+        if not self._settings.reel_face_tracking:
+            return None
+        try:
+            from app.video.framing import FaceTrackingError, compute_crop_window
+
+            return await asyncio.to_thread(
+                compute_crop_window, source, (1080, 1920)
+            )
+        except FaceTrackingError as exc:
+            logger.warning("Face tracking disabled for this job: %s", exc)
+            return None
+        except Exception:
+            logger.exception("Face-track scan crashed; falling back to static crop")
+            return None
+
+    async def _maybe_transcribe_full(self, source: Path, duration: float, strategy: str):
+        """Transcribe the whole movie only for short videos (transcript strategy)."""
+        if strategy not in ("auto", "transcript"):
+            return None
+        if duration > self._settings.reel_transcript_max_duration:
+            logger.info(
+                "Movie is %.0fs; skipping full transcription (limit %ds)",
+                duration,
+                self._settings.reel_transcript_max_duration,
+            )
+            return None
+        try:
+            segments = await asyncio.to_thread(transcribe_clip, source, self._settings.whisper_model)
+            return segments or None
+        except VideoProcessingError:
+            logger.warning("Full-movie transcription failed; continuing without transcript")
+            return None
 
     async def _notify_admins(self, text: str) -> None:
         for admin_id in self._settings.admin_ids:

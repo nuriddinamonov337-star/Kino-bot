@@ -66,6 +66,26 @@ async def worker_loop(stop: asyncio.Event) -> None:
         await database.dispose()
 
 
+async def start_worker(stop_event: asyncio.Event | None = None) -> None:
+    """Run the Reel worker loop as a background task inside the bot process.
+
+    Creates its own stop event when none is supplied so callers can simply
+    ``await start_worker()`` or schedule it with ``asyncio.create_task``.
+    Unexpected failures are logged (never silently swallowed) and re-raised
+    so the caller's error handler can observe them.
+    """
+    stop = stop_event if stop_event is not None else asyncio.Event()
+    logger.info("Reel background worker starting")
+    try:
+        await worker_loop(stop)
+    except asyncio.CancelledError:
+        logger.info("Reel background worker cancelled")
+        raise
+    except Exception:
+        logger.exception("Reel background worker crashed")
+        raise
+
+
 def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level)

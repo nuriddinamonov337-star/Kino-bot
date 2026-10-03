@@ -3,6 +3,7 @@
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from app.handlers.admin_ads import ads_list, ads_menu, ads_status, ads_view
+from app.handlers.admin_broadcast import broadcast_conversation
 from app.handlers.admin_channels import channel_conversation, channel_delete_conversation
 from app.handlers.admin_jobs import jobs_list, jobs_retry
 from app.handlers.admin_movies import movie_conversation, movie_delete_conversation
@@ -24,6 +25,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(movie_delete_conversation)
     application.add_handler(channel_conversation)
     application.add_handler(channel_delete_conversation)
+    application.add_handler(broadcast_conversation)
     application.add_handler(
         CallbackQueryHandler(
             panel_callback,

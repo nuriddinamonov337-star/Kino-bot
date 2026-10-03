@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 
@@ -17,10 +18,24 @@ from app.queue import JobQueue
 
 logger = logging.getLogger(__name__)
 
+WORKER_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log unexpected handler failures without terminating long polling."""
     logger.exception("Unhandled bot update error", exc_info=context.error)
+
+
+def _log_worker_result(task: asyncio.Task) -> None:
+    """Log background Reel worker termination (errors are never silent)."""
+    if task.cancelled():
+        logger.info("Reel background worker task cancelled")
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.exception("Reel background worker failed", exc_info=exc)
+    else:
+        logger.info("Reel background worker task finished")
 
 
 async def on_startup(application: Application) -> None:
@@ -31,9 +46,35 @@ async def on_startup(application: Application) -> None:
     health: HealthServer | None = application.bot_data.get("health")
     if health is not None:
         await health.start()
+    from app.workers.reels import start_worker
+
+    stop_event = asyncio.Event()
+    application.bot_data["reel_worker_stop"] = stop_event
+    worker_task = asyncio.create_task(start_worker(stop_event), name="reel-worker")
+    worker_task.add_done_callback(_log_worker_result)
+    application.bot_data["reel_worker_task"] = worker_task
+    logger.info("Reel background worker scheduled")
 
 
 async def on_shutdown(application: Application) -> None:
+    worker_task: asyncio.Task | None = application.bot_data.pop("reel_worker_task", None)
+    stop_event: asyncio.Event | None = application.bot_data.pop("reel_worker_stop", None)
+    if stop_event is not None:
+        stop_event.set()
+    if worker_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(worker_task), timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("Reel worker did not stop within %ss; cancelling", WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+            worker_task.cancel()
+            try:
+                await worker_task
+            except (asyncio.CancelledError, Exception):
+                logger.exception("Reel worker task ended with error after cancel")
+        except asyncio.CancelledError:
+            logger.info("Reel worker shutdown cancelled")
+        except Exception:
+            logger.exception("Reel worker task raised during shutdown")
     health: HealthServer | None = application.bot_data.get("health")
     if health is not None:
         await health.stop()

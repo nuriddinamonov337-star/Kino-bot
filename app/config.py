@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     bot_token: SecretStr
     admin_ids: Annotated[tuple[int, ...], NoDecode] = ()
+    main_channel_id: int | None = None
     reels_channel_id: int | None = None
     required_channel_ids: Annotated[tuple[int, ...], NoDecode] = ()
     database_url: str
@@ -65,8 +66,10 @@ class Settings(BaseSettings):
     aimlapi_key_1: SecretStr | None = None
     aimlapi_key_2: SecretStr | None = None
     aimlapi_key_3: SecretStr | None = None
+    aimlapi_key_4: SecretStr | None = None
     aimlapi_base_url: str = "https://api.aimlapi.com/v1"
     aimlapi_model: str = "glm-5.2"
+    aimlapi_fallback_model: str | None = None
     aimlapi_timeout: float = 90.0
     aimlapi_key_cooldown_seconds: float = 120.0
     ffmpeg_binary: str = "ffmpeg"
@@ -80,6 +83,10 @@ class Settings(BaseSettings):
     reel_max_per_movie: int = 4
     reel_min_seconds: int = 15
     reel_max_seconds: int = 30
+    reel_face_tracking: bool = False
+    face_detection_model: str = "haar"
+    reel_moment_strategy: str = "auto"
+    reel_transcript_max_duration: int = 1200
     environment: str = "development"
     log_level: str = "INFO"
     health_port: int | None = None
@@ -122,7 +129,7 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def merge_numbered_aimlapi_keys(self) -> Settings:
         numbered = []
-        for item in (self.aimlapi_key_1, self.aimlapi_key_2, self.aimlapi_key_3):
+        for item in (self.aimlapi_key_1, self.aimlapi_key_2, self.aimlapi_key_3, self.aimlapi_key_4):
             if item is None:
                 continue
             secret = item.get_secret_value().strip()
