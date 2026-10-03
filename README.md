@@ -57,6 +57,19 @@ docker compose up
 
 `docker compose down -v` ishlatmang: bu PostgreSQL volume’ini o‘chiradi.
 
+## Kino qo‘shish va Reels: yangi funksiyalar
+
+Admin panel orqali kino qo‘shishning uchta usuli bor: forward, serverga video yoki ochiq URL.
+
+- **URL yuklash** (`app/video/downloader.py`): faqat `http/https`, private/local host va embedded credential rad etiladi, hajm 5 GB cheklov; oddiy MP4 `httpx`, HLS/M3U8 va video sahifalar `yt-dlp` bilan olinadi. 50 MB gacha Telegram’ga yuklanib `file_id` saqlanadi, kattasi uchun `source_url` saqlanib worker keyinroq yuklab oladi.
+- **Main channel post**: kino saqlangach `MAIN_CHANNEL_ID` ga poster + nom + kod + tavsif post qilinadi va `main_channel_message_id` yoziladi; kanal sozlanmagan bo‘lsa kino baribir saqlanib qoladi.
+- **Xabar yuborish** (`app/handlers/admin_broadcast.py`): foydalanuvchilar / 1-kanal (main) / 2-kanal (reels) / hammasi / maxsus ID’lar; FloodWait bilan qayta urinish, 0.05 s pauza, muvaffaqiyatsiz ID’lar logga yoziladi.
+- **Reels strategiyasi** (`app/video/moments.py`): `REEL_MOMENT_STRATEGY` = `auto`/`metadata`/`transcript`/`heuristic`. `auto` da AI ishlamasa to‘liq mahalliy heuristic’ga o‘tadi — AI o‘lsa ham job bajariladi. Qisqa filmlarda (≤ `REEL_TRANSCRIPT_MAX_DURATION`, default 1200 s) transcript-avval yo‘l ishlatiladi.
+- **Yuz kuzatuvi** (`app/video/framing.py`): `REEL_FACE_TRACKING=true` bo‘lsa har sahnada yuz markaziga siljigan 9:16 crop; default `false` — statik markaz crop.
+- **AIMLAPI fallback**: har bir xatolik (401/429/5xx/timeout) alohida log qilinadi, har kalitda 3 marta exponential retry, barcha kalitlar tugasa `AIMLAPI_FALLBACK_MODEL` siniladi va adminga sababli xabar boradi (`AIMLAPI_KEY_4` gacha qo‘llab-quvvatlanadi).
+
+Test: `python -m pytest -q` (97+ test).
+
 ## Local Docker’siz ishlatish
 
 ```powershell
@@ -99,8 +112,13 @@ Majburiy production Variables:
 - `DATABASE_URL`
 - `REDIS_URL`
 - `ADMIN_IDS`
+- `MAIN_CHANNEL_ID` (masalan `-1003231515720`)
 - `REELS_CHANNEL_ID`
-- `AIMLAPI_KEYS` yoki `AIMLAPI_KEY_1`
+- `AIMLAPI_KEYS` yoki `AIMLAPI_KEY_1` (ixtiyoriy: `AIMLAPI_KEY_2/3/4`)
+- `AIMLAPI_FALLBACK_MODEL` (ixtiyoriy: asosiy model ishlamasa zaxira model)
+- `REEL_MOMENT_STRATEGY` (default `auto`; `metadata`/`transcript`/`heuristic`)
+- `REEL_TRANSCRIPT_MAX_DURATION` (default `1200`)
+- `REEL_FACE_TRACKING` (default `false`)
 - `CARD_NUMBER`
 - `CARD_OWNER`
 - `PREMIUM_WEEK_PRICE`
