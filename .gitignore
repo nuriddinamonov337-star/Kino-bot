@@ -33,3 +33,5 @@ Thumbs.db
 # Legacy frontend dependencies (not used by the Python bot)
 node_modules/
 dist/
+
+chat_*.md
