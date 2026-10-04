@@ -1,0 +1,20 @@
+# Railway config for the Reel WORKER service.
+#
+# In the Railway dashboard, open the Worker service -> Settings -> Config-as-code
+# and set the config file path to: /railway.worker.toml
+#
+# The root railway.toml is used by the BOT service. If the Worker service keeps
+# using the root railway.toml it will run `python -m app.bot` and fail the "/"
+# healthcheck, which is the usual cause of a Worker crash-loop.
+
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "python -m app.workers.reels"
+# Do NOT run migrations here: the Bot service already owns the pre-deploy
+# migration step. Running it twice races on the alembic_version table.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/"
+healthcheckTimeout = 60

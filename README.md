@@ -100,7 +100,17 @@ Shu repository’dan ikkinchi Railway service yarating. Worker service uchun sta
 python -m app.workers.reels
 ```
 
-Worker Telegram bot service’dan alohida process bo‘lishi kerak. Worker service’da ham bir xil production environment variables bo‘lsin. Migrationni bir vaqtning o‘zida ikki service bajarib yubormasligi uchun `alembic upgrade head` ni Bot service deploy pre-command sifatida qoldiring; worker service’da migrationni alohida avtomatik command qilib qo‘ymang.
+**Muhim:** Railway repo ildizidagi `railway.toml` ni barcha service’larga qo‘llaydi. Shu sababli Worker service’ni alohida config faylga yo‘naltirish shart:
+
+1. Railway dashboard → Worker service → **Settings → Config-as-code**.
+2. **Railway Config File** maydoniga `/railway.worker.toml` yozing.
+3. Saqlang va redeploy qiling.
+
+`railway.worker.toml` Worker uchun `startCommand = "python -m app.workers.reels"` ni belgilaydi va migrationni ishga tushirmaydi. Agar Worker service ildiz `railway.toml` da qolsa, u `python -m app.bot` ni ishga tushiradi va `/` healthcheck’da yiqilib, crash-loop bo‘ladi.
+
+Worker Telegram bot service’dan alohida process bo‘lishi kerak. Worker service’da ham bir xil production environment variables bo‘lsin (`BOT_TOKEN`, `DATABASE_URL`, `REDIS_URL`, `ADMIN_IDS`, `REELS_CHANNEL_ID`, `AIMLAPI_KEYS`). Migrationni bir vaqtning o‘zida ikki service bajarib yubormasligi uchun `alembic upgrade head` ni Bot service deploy pre-command sifatida qoldiring; worker service’da migrationni alohida avtomatik command qilib qo‘ymang.
+
+Worker o‘zining HTTP health serverini `PORT` (yoki `HEALTH_PORT`) da ishga tushiradi, shuning uchun Railway healthcheck (`/`) muvaffaqiyatli o‘tadi.
 
 ### PostgreSQL va Redis
 

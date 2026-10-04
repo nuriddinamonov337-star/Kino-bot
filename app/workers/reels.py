@@ -11,6 +11,7 @@ from telegram import Bot
 
 from app.config import get_settings
 from app.database.session import Database
+from app.health import HealthServer
 from app.logging import configure_logging
 from app.queue import JobQueue
 from app.services.reels import claim_next_pending_job, claim_reel_job
@@ -36,13 +37,15 @@ async def process_one(pipeline: ReelPipeline, database: Database, job_id: UUID, 
     await pipeline.run_job(job_id)
 
 
-async def worker_loop(stop: asyncio.Event) -> None:
+async def worker_loop(stop: asyncio.Event, health: HealthServer | None = None) -> None:
     settings = get_settings()
     database = Database(settings.database_url)
     queue = JobQueue(settings.redis_url)
     await queue.connect()
     bot = Bot(settings.bot_token.get_secret_value())
     pipeline = ReelPipeline(settings, database, bot)
+    if health is not None:
+        await health.start()
     logger.info("Reel worker started")
     try:
         while not stop.is_set():
@@ -62,6 +65,8 @@ async def worker_loop(stop: asyncio.Event) -> None:
             await process_one(pipeline, database, job_id, settings.reel_job_max_attempts)
     finally:
         logger.info("Reel worker shutting down")
+        if health is not None:
+            await health.stop()
         await queue.close()
         await database.dispose()
 
@@ -87,8 +92,25 @@ async def start_worker(stop_event: asyncio.Event | None = None) -> None:
 
 
 def main() -> None:
-    settings = get_settings()
+    """Worker process entry point (``python -m app.workers.reels``).
+
+    Starts an HTTP health server on ``PORT``/``HEALTH_PORT`` so Railway's
+    healthcheck (``healthcheckPath = "/"``) succeeds. Without this the worker
+    container is killed as unhealthy and crash-loops.
+    """
+    try:
+        settings = get_settings()
+    except Exception:
+        # Log the real reason (missing BOT_TOKEN / DATABASE_URL, bad URL, ...)
+        # instead of dying with a bare pydantic traceback.
+        logging.basicConfig(level="ERROR", format="%(asctime)s | %(levelname)s | %(message)s", force=True)
+        logger.exception(
+            "Worker failed to start: invalid configuration. "
+            "Check BOT_TOKEN, DATABASE_URL and REDIS_URL are set for this service."
+        )
+        raise SystemExit(1) from None
     configure_logging(settings.log_level)
+    logger.info("Starting CineStream AI Reel worker in %s", settings.environment)
     stop = asyncio.Event()
 
     def request_stop(*_args: object) -> None:
@@ -99,11 +121,16 @@ def main() -> None:
         signal.signal(signal.SIGTERM, request_stop)
     except (NotImplementedError, ValueError):
         pass
-    asyncio.run(_run(stop))
+    asyncio.run(_run(stop, settings))
 
 
-async def _run(stop: asyncio.Event) -> None:
-    await worker_loop(stop)
+async def _run(stop: asyncio.Event, settings=None) -> None:
+    if settings is None:
+        settings = get_settings()
+    health: HealthServer | None = None
+    if settings.listen_port is not None:
+        health = HealthServer(Database(settings.database_url), settings.listen_port)
+    await worker_loop(stop, health)
 
 
 if __name__ == "__main__":
