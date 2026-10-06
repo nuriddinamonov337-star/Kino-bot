@@ -96,6 +96,18 @@ def broadcast_confirm() -> InlineKeyboardMarkup:
     )
 
 
+def movie_preview() -> InlineKeyboardMarkup:
+    """Save/Cancel confirmation shown before a movie is written to the database."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("💾 Saqlash", callback_data="adm:movie:save"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data=CANCEL),
+            ]
+        ]
+    )
+
+
 def confirm_movie_delete(movie_id: UUID) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -138,6 +150,17 @@ def confirm_channel_delete(channel_id: UUID) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("✅ Ha", callback_data=f"adm:channel:confirm:{channel_id}"),
                 InlineKeyboardButton("❌ Yo'q", callback_data="adm:channels"),
             ]
+        ]
+    )
+
+
+def admin_menu() -> InlineKeyboardMarkup:
+    """Admin management submenu (§26)."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("➕ Admin qo'shish", callback_data="adm:admin:add")],
+            [InlineKeyboardButton("🗑 Adminni o'chirish", callback_data="adm:admin:remove")],
+            [InlineKeyboardButton("🔙 Orqaga", callback_data="adm:main")],
         ]
     )
 

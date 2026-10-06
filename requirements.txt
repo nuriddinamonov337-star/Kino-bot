@@ -23,7 +23,7 @@ scenedetect[opencv]>=0.6.5,<1.0
 # and is what app/video/framing.py needs for Haar face detection.
 opencv-python-headless>=4.8,<5.0
 openai-whisper>=20240930
-yt-dlp>=2024.8,<2027.0
+yt-dlp>=2024.12,<2027.0
 
 # Quality and tests
 pytest>=8.3,<9.0

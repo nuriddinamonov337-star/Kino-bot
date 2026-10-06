@@ -1,25 +1,59 @@
-"""User and admin keyboards for advertising requests."""
-
-from uuid import UUID
+"""User and admin keyboards for the paid advertising system (§12)."""
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-from app.database.models import AdvertisingStatus
+from app.database.models import AdStatus
 
 
-def advertising_menu() -> InlineKeyboardMarkup:
+def tariff_menu(week_price: int, month_price: int) -> InlineKeyboardMarkup:
+    """Step 2: choose a tariff."""
     return InlineKeyboardMarkup(
         [
-            [InlineKeyboardButton("📢 Obunachi yig‘ish", callback_data="ad:type:subscribers")],
-            [InlineKeyboardButton("📣 Botda reklama", callback_data="ad:type:bot")],
-            [InlineKeyboardButton("📡 Kanallarda reklama", callback_data="ad:type:channels")],
-            [InlineKeyboardButton("👨‍💻 Admin bilan bog‘lanish", callback_data="ad:type:contact")],
+            [InlineKeyboardButton(f"🔹 1 Week — {week_price:,} so'm", callback_data="ad:tariff:week")],
+            [InlineKeyboardButton(f"🔹 1 Month — {month_price:,} so'm", callback_data="ad:tariff:month")],
+            [InlineKeyboardButton("❌ Bekor qilish", callback_data="ad:cancel")],
+        ]
+    )
+
+
+def tariff_confirm() -> InlineKeyboardMarkup:
+    """Step 3: confirm the chosen tariff."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Davom etish", callback_data="ad:continue"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data="ad:cancel"),
+            ]
+        ]
+    )
+
+
+def preview_confirm() -> InlineKeyboardMarkup:
+    """Step 5: confirm the ad preview."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Tasdiqlash", callback_data="ad:confirm"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data="ad:cancel"),
+            ]
         ]
     )
 
 
 def cancel() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Bekor qilish", callback_data="ad:cancel")]])
+
+
+def admin_review(campaign_id: int) -> InlineKeyboardMarkup:
+    """Admin approve/reject buttons for a new ad order."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"ad:admin:approve:{campaign_id}"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ad:admin:reject:{campaign_id}"),
+            ]
+        ]
+    )
 
 
 def admin_ads_menu() -> InlineKeyboardMarkup:
@@ -43,33 +77,13 @@ def ads_list_nav(kind: str, page: int, total: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def request_actions(request_id: UUID, status: AdvertisingStatus) -> InlineKeyboardMarkup:
-    ident = str(request_id)
-    rows = [
-        [
-            InlineKeyboardButton("🔎 Ko‘rish", callback_data=f"a:v:{ident}"),
-        ]
-    ]
-    if status is AdvertisingStatus.PENDING:
+def campaign_actions(campaign_id: int, status: AdStatus) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if status is AdStatus.PENDING:
         rows.append(
             [
-                InlineKeyboardButton("📝 Ko‘rib chiqish", callback_data=f"a:s:{ident}:r"),
-                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"a:s:{ident}:a"),
-                InlineKeyboardButton("❌ Rad etish", callback_data=f"a:s:{ident}:j"),
-            ]
-        )
-    elif status is AdvertisingStatus.IN_REVIEW:
-        rows.append(
-            [
-                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"a:s:{ident}:a"),
-                InlineKeyboardButton("❌ Rad etish", callback_data=f"a:s:{ident}:j"),
-            ]
-        )
-    elif status is AdvertisingStatus.APPROVED:
-        rows.append(
-            [
-                InlineKeyboardButton("🏁 Yakunlash", callback_data=f"a:s:{ident}:c"),
-                InlineKeyboardButton("🗑 Bekor qilish", callback_data=f"a:s:{ident}:x"),
+                InlineKeyboardButton("✅ Tasdiqlash", callback_data=f"ad:admin:approve:{campaign_id}"),
+                InlineKeyboardButton("❌ Bekor qilish", callback_data=f"ad:admin:reject:{campaign_id}"),
             ]
         )
     rows.append([InlineKeyboardButton("🔙 Ro‘yxat", callback_data="adm:ads")])

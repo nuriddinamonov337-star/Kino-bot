@@ -16,7 +16,7 @@ from app.database.models import Movie, ReelJob
 from app.database.session import Database
 from app.services.reels import get_movie, mark_job_completed, mark_job_failed, save_reel
 from app.utils.sanitize import sanitize_error
-from app.video.moments import select_moments
+from app.video.moments import select_moments, select_moments_by_windows
 from app.video.processing import (
     VideoProcessingError,
     detect_scenes,
@@ -90,18 +90,69 @@ class ReelPipeline:
             await self._obtain_source(movie, source)
             duration = await probe_duration(self._settings.ffprobe_binary, source)
             face_track = await self._maybe_build_face_track(source)
+            # §16-17: scene analysis (PySceneDetect + AI) runs BEFORE Whisper.
+            # Only the transcript strategy needs a full-movie transcript up front;
+            # every other strategy selects moments from scene boundaries first and
+            # transcribes just the chosen clips afterwards.
             scenes = detect_scenes(source)
-            transcript = await self._maybe_transcribe_full(source, duration, strategy)
-            selected = await select_moments(
-                scenes,
-                duration=duration,
-                max_count=self._settings.reel_max_per_movie,
-                strategy=strategy,
-                ai_complete=self._ai.complete_json if self._ai else None,
-                transcript=transcript,
-                title=movie.title,
-                min_seconds=self._settings.reel_min_seconds,
-                max_seconds=self._settings.reel_max_seconds,
+            use_windows = (
+                self._ai is not None
+                and strategy in ("auto", "transcript")
+                and duration > self._settings.reel_use_windows_threshold
+            )
+            transcript = await self._maybe_transcribe_full(source, duration, strategy, use_windows)
+            if use_windows and transcript:
+                # Uzoq filmlar: 5 daqiqalik oynalar bo‘yicha moment tanlash.
+                logger.info(
+                    "Uzoq film (%.0fs): oynali moment tanlash ishlatiladi (window=%ds)",
+                    duration,
+                    self._settings.reel_window_seconds,
+                )
+                try:
+                    selected = await select_moments_by_windows(
+                        transcript,
+                        ai_complete=self._ai.complete_json,
+                        max_count=self._settings.reel_max_per_movie,
+                        window_seconds=self._settings.reel_window_seconds,
+                        min_duration=self._settings.reel_window_min_duration,
+                        max_duration=self._settings.reel_window_max_duration,
+                        max_retries=self._settings.reel_window_max_retries,
+                    )
+                except AimlApiError as exc:
+                    logger.warning(
+                        "Oynali tanlash muvaffaqiyatsiz (%s); oddiy usulga o‘tiladi",
+                        sanitize_error(str(exc)),
+                    )
+                    selected = await select_moments(
+                        scenes,
+                        duration=duration,
+                        max_count=self._settings.reel_max_per_movie,
+                        strategy=strategy,
+                        ai_complete=self._ai.complete_json,
+                        transcript=transcript,
+                        title=movie.title,
+                        min_seconds=self._settings.reel_min_seconds,
+                        max_seconds=self._settings.reel_max_seconds,
+                    )
+            else:
+                selected = await select_moments(
+                    scenes,
+                    duration=duration,
+                    max_count=self._settings.reel_max_per_movie,
+                    strategy=strategy,
+                    ai_complete=self._ai.complete_json if self._ai else None,
+                    transcript=transcript,
+                    title=movie.title,
+                    min_seconds=self._settings.reel_min_seconds,
+                    max_seconds=self._settings.reel_max_seconds,
+                )
+            logger.info(
+                "Scene analysis selected %d moment(s) for %s (strategy=%s, transcript=%s, windows=%s)",
+                len(selected),
+                movie.title,
+                strategy,
+                "yes" if transcript else "no",
+                "yes" if use_windows else "no",
             )
             created = 0
             for index, scene in enumerate(selected, start=1):
@@ -148,17 +199,55 @@ class ReelPipeline:
             work.cleanup()
 
     async def _obtain_source(self, movie: Movie, destination: Path) -> None:
+        """Fetch the movie video, preferring the Telegram ``file_id``.
+
+        If the Telegram download fails (stale ``file_id``, revoked access, file
+        forwarded from a chat the bot cannot read, etc.) we log the exact reason
+        and fall back to the owner-supplied ``source_url``. When both fail we
+        raise a clear, admin-facing error.
+        """
+        telegram_error: str | None = None
         if movie.telegram_file_id:
             try:
                 telegram_file = await self._bot.get_file(movie.telegram_file_id)
                 await telegram_file.download_to_drive(custom_path=str(destination))
                 return
             except TelegramError as exc:
-                raise VideoProcessingError("Telegram file download failed") from exc
+                telegram_error = sanitize_error(str(exc))
+                logger.warning(
+                    "Telegram file download failed for movie %s (file_id=%s, unique_id=%s): %s",
+                    movie.code,
+                    movie.telegram_file_id,
+                    movie.telegram_file_unique_id,
+                    telegram_error,
+                )
+            except Exception as exc:  # noqa: BLE001 - defensive: never crash the worker
+                telegram_error = sanitize_error(str(exc))
+                logger.exception(
+                    "Unexpected error downloading Telegram file for movie %s (file_id=%s)",
+                    movie.code,
+                    movie.telegram_file_id,
+                )
         if movie.source_url:
-            await download_http_source(movie.source_url, destination)
-            return
-        raise VideoProcessingError("Movie has no authorized Telegram file or owner-supplied URL")
+            logger.info("Falling back to source_url for movie %s", movie.code)
+            try:
+                await download_http_source(movie.source_url, destination)
+                return
+            except Exception as exc:  # noqa: BLE001 - surface a clear message
+                logger.warning("source_url download failed for movie %s: %s", movie.code, sanitize_error(str(exc)))
+                raise VideoProcessingError(
+                    "Video yuklanmadi. Sabab: "
+                    f"{sanitize_error(str(exc))}. Iltimos, kinoni qayta forward qiling yoki URL yuboring."
+                ) from exc
+        if telegram_error is not None:
+            raise VideoProcessingError(
+                "Video yuklanmadi. Sabab: "
+                f"{telegram_error}. Iltimos, kinoni qayta forward qiling yoki URL yuboring."
+            )
+        raise VideoProcessingError(
+            "Video yuklanmadi. Sabab: kino uchun Telegram fayl ham, URL ham yo‘q. "
+            "Iltimos, kinoni qayta forward qiling yoki URL yuboring."
+        )
 
     async def _maybe_build_face_track(self, source: Path):
         """Build a face-centre track when enabled; ``None`` means static crop."""
@@ -177,11 +266,19 @@ class ReelPipeline:
             logger.exception("Face-track scan crashed; falling back to static crop")
             return None
 
-    async def _maybe_transcribe_full(self, source: Path, duration: float, strategy: str):
-        """Transcribe the whole movie only for short videos (transcript strategy)."""
+    async def _maybe_transcribe_full(
+        self, source: Path, duration: float, strategy: str, use_windows: bool = False
+    ):
+        """Transcribe the whole movie for the transcript/window strategies.
+
+        Short movies (<= ``REEL_TRANSCRIPT_MAX_DURATION``) are transcribed as
+        before. Long movies are only transcribed when the window-based path is
+        active (``use_windows``), because that path needs the full transcript to
+        split it into 5-minute windows.
+        """
         if strategy not in ("auto", "transcript"):
             return None
-        if duration > self._settings.reel_transcript_max_duration:
+        if duration > self._settings.reel_transcript_max_duration and not use_windows:
             logger.info(
                 "Movie is %.0fs; skipping full transcription (limit %ds)",
                 duration,

@@ -163,8 +163,47 @@ async def download_movie_source(
     timeout: float = 600,
     max_bytes: int = MAX_DOWNLOAD_BYTES,
 ) -> Path:
-    """Download an owner-supplied URL, picking HTTP or yt-dlp automatically."""
+    """Download an owner-supplied URL, picking HTTP or yt-dlp automatically.
+
+    The primary strategy is chosen from the URL shape (HLS/pages → ``yt-dlp``,
+    direct files → ``httpx``). If the primary strategy fails we transparently
+    retry with the other one, so a plain MP4 served from a page-like URL (or an
+    HLS stream behind a ``.mp4`` path) still has a chance to succeed. When both
+    strategies fail a single, admin-friendly :class:`DownloadError` is raised.
+    """
     cleaned = validate_source_url(url)
-    if looks_like_stream_or_page(cleaned):
+    prefer_ytdlp = looks_like_stream_or_page(cleaned)
+    logger.info(
+        "Routing URL download (host=%s, prefer=%s)",
+        urlparse(cleaned).hostname,
+        "yt-dlp" if prefer_ytdlp else "httpx",
+    )
+
+    async def _try_ytdlp() -> Path:
         return await download_with_ytdlp(cleaned, destination, max_bytes=max_bytes)
-    return await download_http_source(cleaned, destination, timeout=timeout, max_bytes=max_bytes)
+
+    async def _try_http() -> Path:
+        return await download_http_source(cleaned, destination, timeout=timeout, max_bytes=max_bytes)
+
+    primary, secondary = (_try_ytdlp, _try_http) if prefer_ytdlp else (_try_http, _try_ytdlp)
+    primary_name = "yt-dlp" if prefer_ytdlp else "httpx"
+    secondary_name = "httpx" if prefer_ytdlp else "yt-dlp"
+    try:
+        return await primary()
+    except DownloadError as primary_exc:
+        logger.warning(
+            "Primary download strategy (%s) failed for %s: %s; trying %s",
+            primary_name,
+            urlparse(cleaned).hostname,
+            sanitize_error(str(primary_exc)),
+            secondary_name,
+        )
+        try:
+            return await secondary()
+        except DownloadError as secondary_exc:
+            raise DownloadError(
+                f"URL yuklanmadi. Sabab: {sanitize_error(str(secondary_exc))}. "
+                "Iltimos, faqat ochiq va ruxsat etilgan MP4 yoki HLS URL'larni yuboring. "
+                "DRM yoki Cloudflare himoyasi bo'lgan saytlar ishlamaydi. "
+                "Yoki videoni to'g'ridan-to'g'ri forward qiling."
+            ) from secondary_exc

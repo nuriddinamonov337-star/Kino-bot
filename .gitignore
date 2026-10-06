@@ -12,6 +12,7 @@ venv/
 .env
 .env.*
 !.env.example
+railway.env
 
 # Local runtime data and temporary video files
 data/

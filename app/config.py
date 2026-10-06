@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     face_detection_model: str = "haar"
     reel_moment_strategy: str = "auto"
     reel_transcript_max_duration: int = 1200
+    # Window-based moment selection (Clip Generator / Adversitas style)
+    reel_window_seconds: int = Field(default=300, ge=30)
+    reel_window_min_duration: int = Field(default=15, ge=1)
+    reel_window_max_duration: int = Field(default=30, ge=1)
+    reel_window_max_retries: int = Field(default=3, ge=1)
+    reel_use_windows_threshold: int = Field(default=300, ge=0)
     environment: str = "development"
     log_level: str = "INFO"
     health_port: int | None = None
@@ -104,11 +110,26 @@ class Settings(BaseSettings):
     subscriber_500_price: int = 70000
     subscriber_1000_price: int = 130000
     admin_username: str | None = None
+    # Advertising system (§12)
+    reklama_kanal_id: int | None = None
+    reklama_week_price: int = 30000
+    reklama_month_price: int = 100000
+    reklama_week_times_per_day: int = 3
+    reklama_month_times_per_day: int = 5
+    reklama_post_hours_3: Annotated[tuple[int, ...], NoDecode] = (9, 15, 21)
+    reklama_post_hours_5: Annotated[tuple[int, ...], NoDecode] = (9, 12, 15, 18, 21)
 
-    @field_validator("admin_ids", "required_channel_ids", mode="before")
+    @field_validator(
+        "admin_ids",
+        "required_channel_ids",
+        "reklama_post_hours_3",
+        "reklama_post_hours_5",
+        mode="before",
+    )
     @classmethod
     def parse_ids(cls, value: Any) -> tuple[int, ...]:
         return parse_integer_list(value)
+
 
     @field_validator("aimlapi_keys", mode="before")
     @classmethod

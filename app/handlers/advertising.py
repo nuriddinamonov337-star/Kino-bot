@@ -1,4 +1,11 @@
-"""User advertising request ConversationHandler."""
+"""User advertising ConversationHandler (§12).
+
+Flow:
+1. "📢 Reklama" → choose tariff (week/month).
+2. Confirm tariff → send ad content (video/photo/document + caption).
+3. Preview → confirm → pay (card details) → send receipt.
+4. Receipt is forwarded to admins with approve/reject buttons.
+"""
 
 from __future__ import annotations
 
@@ -7,37 +14,62 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 from telegram import Update
 from telegram.error import TelegramError
-from telegram.ext import CallbackQueryHandler, ContextTypes, ConversationHandler, MessageHandler, filters
+from telegram.ext import (
+    CallbackQueryHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 
 from app.config import get_settings
-from app.database.models import AdvertisingType
+from app.database.models import AdTariff
 from app.database.session import Database
 from app.handlers.access import grant_or_request_subscription
-from app.keyboards.advertising import advertising_menu, cancel
-from app.keyboards.menu import main_menu
+from app.keyboards.advertising import (
+    admin_review,
+    cancel,
+    preview_confirm,
+    tariff_confirm,
+    tariff_menu,
+)
+from app.keyboards import main_menu
 from app.services.advertising import (
-    create_advertising_request,
-    get_contact_handle,
-    validate_details,
-    validate_http_link,
-    validate_target_count,
+    attach_receipt,
+    create_ad_campaign,
+    detect_content_type,
+    extract_file_id,
+    set_admin_message_id,
+    tariff_duration_days,
+    tariff_label,
+    tariff_price,
+    tariff_times_per_day,
+    tariff_total_posts,
 )
 from app.services.users import register_or_update_user
 
 logger = logging.getLogger(__name__)
 
-CHOOSE_TYPE, TITLE, LINK, COUNT, DETAILS = range(5)
+CHOOSE_TARIFF, CONFIRM_TARIFF, RECEIVE_CONTENT, PREVIEW, RECEIVE_RECEIPT = range(5)
 
-TYPE_BY_DATA = {
-    "ad:type:subscribers": AdvertisingType.SUBSCRIBERS,
-    "ad:type:bot": AdvertisingType.BOT,
-    "ad:type:channels": AdvertisingType.CHANNELS,
-    "ad:type:contact": AdvertisingType.CONTACT,
+TARIFF_BY_DATA = {
+    "ad:tariff:week": AdTariff.WEEK,
+    "ad:tariff:month": AdTariff.MONTH,
 }
 
 
 def _draft(context: ContextTypes.DEFAULT_TYPE) -> dict[str, object]:
     return context.user_data.setdefault("ad_draft", {})
+
+
+def _tariff_summary(tariff: AdTariff) -> str:
+    settings = get_settings()
+    return (
+        f"📢 {tariff_label(tariff)} — {tariff_price(tariff, settings):,} so'm\n\n"
+        f"⏱ Muddat: {tariff_duration_days(tariff)} kun\n"
+        f"📊 Kuniga: {tariff_times_per_day(tariff, settings)} mahal\n"
+        f"🔢 Jami: {tariff_total_posts(tariff, settings)} marta"
+    )
 
 
 async def begin_advertising(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -46,142 +78,176 @@ async def begin_advertising(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     message = update.effective_message
     if message is None:
         return ConversationHandler.END
+    context.user_data.pop("ad_draft", None)
+    settings = get_settings()
     await message.reply_text(
-        "📢 Reklama\n\nTo‘lov avtomatik emas. So‘rov yuboring — admin ko‘rib chiqadi.",
-        reply_markup=advertising_menu(),
+        "📢 Reklama berish\n\nReklama muddati va narxini tanlang:",
+        reply_markup=tariff_menu(settings.reklama_week_price, settings.reklama_month_price),
     )
-    return CHOOSE_TYPE
+    return CHOOSE_TARIFF
 
 
-async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def choose_tariff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     if query is None:
         return ConversationHandler.END
     await query.answer()
-    ad_type = TYPE_BY_DATA.get(query.data or "")
-    if ad_type is None:
+    tariff = TARIFF_BY_DATA.get(query.data or "")
+    if tariff is None:
         return ConversationHandler.END
     draft = _draft(context)
     draft.clear()
-    draft["ad_type"] = ad_type
-    settings = get_settings()
-    if ad_type is AdvertisingType.SUBSCRIBERS:
-        await query.edit_message_text(
-            f"📢 Obunachi yig‘ish\n\nKanal auditoriyasini kengaytirish xizmati. Avtomatik to‘lov qilinmaydi, so‘rov admin tomonidan ko‘rib chiqiladi.\n\n100 ta — {settings.subscriber_100_price:,} so‘m\n500 ta — {settings.subscriber_500_price:,} so‘m\n1000 ta — {settings.subscriber_1000_price:,} so‘m\n\nKanal nomini yuboring (255 belgigacha).",
-            reply_markup=cancel(),
-        )
-        return TITLE
-    if ad_type is AdvertisingType.CHANNELS:
-        await query.edit_message_text(
-            "📡 Kanallarda reklama\n\nReklamangiz hamkor kanallarda joylashtiriladi. Narx kanal, auditoriya va joylashtirish muddatiga qarab admin tomonidan belgilanadi. So‘rov adminlarga yuboriladi.\n\nReklama qilinadigan kanal nomini yuboring.",
-            reply_markup=cancel(),
-        )
-        return TITLE
-    if ad_type is AdvertisingType.CONTACT:
-        contact = get_contact_handle(settings.admin_username)
-        body = (
-            "👨‍💻 Admin bilan bog‘lanish\n\n"
-            f"Admin bilan bog‘lanish uchun: {contact or 'admin kontakt ma’lum emas'}\n\n"
-            "Yoki quyidagi xabarni yuboring va adminga so‘rov jo‘natilsin."
-        )
-        await query.edit_message_text(body, reply_markup=cancel())
-        return DETAILS
+    draft["tariff"] = tariff
+    await query.edit_message_text(_tariff_summary(tariff), reply_markup=tariff_confirm())
+    return CONFIRM_TARIFF
+
+
+async def confirm_tariff(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query is None:
+        return ConversationHandler.END
+    await query.answer()
+    if (query.data or "") != "ad:continue":
+        return ConversationHandler.END
     await query.edit_message_text(
-        f"📣 Botda reklama\n\nBot ichida reklama joylashtirish xizmati. Narx reklama hajmi va muddatiga qarab admin tomonidan belgilanadi.\n\nBotda reklama matnini yuboring (5–2000 belgi).",
+        "📢 Reklamani kiriting:\n\n"
+        "Video, rasm, PDF yoki boshqa fayl yuborishingiz mumkin.\n"
+        "Reklama matnini ham yuboring (caption yoki alohida xabar).",
         reply_markup=cancel(),
     )
-    return DETAILS
+    return RECEIVE_CONTENT
 
 
-async def receive_title(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
-    title = (message.text or "").strip() if message else ""
-    if not title or len(title) > 255:
-        if message:
-            await message.reply_text("Nom 1–255 belgi bo‘lishi kerak.")
-        return TITLE
-    _draft(context)["channel_title"] = title
-    await message.reply_text("Kanal linkini yuboring (https://t.me/...).", reply_markup=cancel())
-    return LINK
+    if message is None:
+        return RECEIVE_CONTENT
+    content_type = detect_content_type(message)
+    if content_type is None:
+        await message.reply_text(
+            "Iltimos, video, rasm yoki fayl (document) yuboring.",
+            reply_markup=cancel(),
+        )
+        return RECEIVE_CONTENT
+    file_id = extract_file_id(message, content_type)
+    if not file_id:
+        await message.reply_text("Fayl aniqlanmadi. Qayta yuboring.", reply_markup=cancel())
+        return RECEIVE_CONTENT
+    draft = _draft(context)
+    draft["content_type"] = content_type
+    draft["file_id"] = file_id
+    draft["caption"] = message.caption
+    tariff: AdTariff = draft["tariff"]  # type: ignore[assignment]
+    settings = get_settings()
+    caption_text = message.caption or "(matn yo‘q)"
+    await message.reply_text(
+        "📢 Sizning reklamangiz\n\n"
+        f"📝 Matn: {caption_text}\n"
+        f"⏱ Muddat: {tariff_label(tariff)}\n"
+        f"💰 Narxi: {tariff_price(tariff, settings):,} so'm\n"
+        f"📊 Kuniga: {tariff_times_per_day(tariff, settings)} marta\n"
+        f"🔢 Jami: {tariff_total_posts(tariff, settings)} marta",
+        reply_markup=preview_confirm(),
+    )
+    return PREVIEW
 
 
-async def receive_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message = update.effective_message
-    value = (message.text or "").strip() if message else ""
-    try:
-        link = validate_http_link(value)
-    except ValueError as exc:
-        await message.reply_text(str(exc))
-        return LINK
-    _draft(context)["channel_link"] = link
-    if _draft(context)["ad_type"] is AdvertisingType.SUBSCRIBERS:
-        await message.reply_text("Kerakli obunachi sonini yuboring.", reply_markup=cancel())
-        return COUNT
-    await message.reply_text("Reklama tafsilotlarini yuboring (5–2000 belgi).", reply_markup=cancel())
-    return DETAILS
+async def confirm_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query is None:
+        return ConversationHandler.END
+    await query.answer()
+    if (query.data or "") != "ad:confirm":
+        return ConversationHandler.END
+    draft = _draft(context)
+    tariff: AdTariff = draft["tariff"]  # type: ignore[assignment]
+    settings = get_settings()
+    card = settings.card_number.get_secret_value() if settings.card_number else "—"
+    owner = settings.card_owner or "—"
+    await query.edit_message_text(
+        "💳 To‘lovni amalga oshiring.\n\n"
+        f"Karta: {card}\n"
+        f"Karta egasi: {owner}\n"
+        f"Summa: {tariff_price(tariff, settings):,} so'm\n\n"
+        "To‘lovni amalga oshirgach, chekni yuboring.",
+        reply_markup=cancel(),
+    )
+    return RECEIVE_RECEIPT
 
 
-async def receive_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    message = update.effective_message
-    try:
-        count = validate_target_count(message.text or "")
-    except ValueError as exc:
-        await message.reply_text(str(exc))
-        return COUNT
-    _draft(context)["target_count"] = count
-    await message.reply_text("Qo‘shimcha izoh yuboring (5–2000 belgi).", reply_markup=cancel())
-    return DETAILS
-
-
-async def receive_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message, user = update.effective_message, update.effective_user
     if message is None or user is None:
         return ConversationHandler.END
-    try:
-        details = validate_details(message.text or "")
-    except ValueError as exc:
-        await message.reply_text(str(exc))
-        return DETAILS
+    if not message.photo:
+        await message.reply_text("Iltimos, to‘lov chekini rasm sifatida yuboring.", reply_markup=cancel())
+        return RECEIVE_RECEIPT
     draft = _draft(context)
-    ad_type: AdvertisingType = draft["ad_type"]  # type: ignore[assignment]
+    tariff: AdTariff = draft["tariff"]  # type: ignore[assignment]
+    settings = get_settings()
     database: Database = context.application.bot_data["database"]
     try:
         async with database.session() as session:
             async with session.begin():
                 db_user = await register_or_update_user(session, user)
-                request = await create_advertising_request(
+                campaign = await create_ad_campaign(
                     session,
                     db_user,
-                    ad_type=ad_type,
-                    details=details,
-                    channel_title=str(draft.get("channel_title") or "") or None,
-                    channel_link=str(draft.get("channel_link") or "") or None,
-                    target_count=int(draft["target_count"]) if "target_count" in draft else None,
+                    tariff=tariff,
+                    content_type=draft["content_type"],  # type: ignore[arg-type]
+                    file_id=str(draft["file_id"]),
+                    caption=draft.get("caption"),  # type: ignore[arg-type]
+                    settings=settings,
                 )
+                await attach_receipt(session, campaign.id, message.photo[-1].file_id)
+                campaign_id = campaign.id
     except SQLAlchemyError:
-        logger.exception("Advertising request save failed")
+        logger.exception("Advertising campaign save failed")
         await message.reply_text("So‘rov saqlanmadi. Qayta urinib ko‘ring.")
         return ConversationHandler.END
     context.user_data.pop("ad_draft", None)
     await message.reply_text(
-        "✅ So‘rovingiz qabul qilindi. Admin tez orada bog‘lanadi. Avtomatik to‘lov yo‘q.",
+        "✅ So‘rovingiz qabul qilindi. Admin tez orada ko‘rib chiqadi.",
         reply_markup=main_menu(),
     )
-    await _notify_admins(context, user, ad_type, details, str(request.id))
+    await _notify_admins(context, user, campaign_id, draft, message.photo[-1].file_id)
     return ConversationHandler.END
 
 
-async def _notify_admins(context: ContextTypes.DEFAULT_TYPE, user, ad_type: AdvertisingType, details: str, request_id: str) -> None:
+async def _notify_admins(
+    context: ContextTypes.DEFAULT_TYPE,
+    user,
+    campaign_id: int,
+    draft: dict[str, object],
+    receipt_file_id: str,
+) -> None:
+    tariff: AdTariff = draft["tariff"]  # type: ignore[assignment]
+    settings = get_settings()
     username = f"@{user.username}" if user.username else "username yo‘q"
+    caption_text = draft.get("caption") or "(matn yo‘q)"
     text = (
-        f"📣 YANGI REKLAMA SO‘ROVI\n\n"
-        f"Turi: {ad_type.value}\n"
-        f"👤 {user.full_name}\n{username}\nID: {user.id}\n"
-        f"So‘rov: {request_id}\n\n{details[:1500]}"
+        "📢 Yangi reklama buyurtmasi\n\n"
+        f"👤 User: {username}\n"
+        f"🆔 ID: {user.id}\n"
+        f"📦 Tarif: {tariff_label(tariff)}\n"
+        f"💰 Narxi: {tariff_price(tariff, settings):,} so'm\n"
+        f"📊 Kuniga: {tariff_times_per_day(tariff, settings)} marta\n"
+        f"🔢 Jami: {tariff_total_posts(tariff, settings)} marta\n\n"
+        f"📝 Matn: {caption_text}"
     )
-    for admin_id in get_settings().admin_ids:
+    database: Database = context.application.bot_data["database"]
+    for admin_id in settings.admin_ids:
         try:
             await context.bot.send_message(admin_id, text)
+            await context.bot.send_photo(admin_id, receipt_file_id, caption="🧾 To‘lov cheki")
+            sent = await context.bot.send_message(
+                admin_id,
+                "Reklamani tasdiqlaysizmi?",
+                reply_markup=admin_review(campaign_id),
+            )
+            async with database.session() as session:
+                async with session.begin():
+                    await set_admin_message_id(session, campaign_id, sent.message_id)
         except TelegramError:
             logger.exception("Advertising notification failed for admin %s", admin_id)
 
@@ -199,11 +265,13 @@ async def cancel_advertising(update: Update, context: ContextTypes.DEFAULT_TYPE)
 advertising_conversation = ConversationHandler(
     entry_points=[MessageHandler(filters.Regex(r"^📢 Reklama$"), begin_advertising)],
     states={
-        CHOOSE_TYPE: [CallbackQueryHandler(choose_type, pattern=r"^ad:type:(subscribers|bot|channels|contact)$")],
-        TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)],
-        LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_link)],
-        COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_count)],
-        DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_details)],
+        CHOOSE_TARIFF: [CallbackQueryHandler(choose_tariff, pattern=r"^ad:tariff:(week|month)$")],
+        CONFIRM_TARIFF: [CallbackQueryHandler(confirm_tariff, pattern=r"^ad:continue$")],
+        RECEIVE_CONTENT: [
+            MessageHandler(filters.VIDEO | filters.PHOTO | filters.Document.ALL, receive_content)
+        ],
+        PREVIEW: [CallbackQueryHandler(confirm_preview, pattern=r"^ad:confirm$")],
+        RECEIVE_RECEIPT: [MessageHandler(filters.PHOTO, receive_receipt)],
     },
     fallbacks=[CallbackQueryHandler(cancel_advertising, pattern=r"^ad:cancel$")],
     name="advertising_request",

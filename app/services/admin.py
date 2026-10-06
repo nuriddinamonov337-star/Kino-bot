@@ -3,16 +3,39 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database.models import Admin, MandatoryChannel, Movie, User
+from app.database.models import (
+    AdCampaign,
+    AdStatus,
+    Admin,
+    MandatoryChannel,
+    Movie,
+    PaymentStatus,
+    PremiumPayment,
+    Reel,
+    ReelJob,
+    ReelJobStatus,
+    User,
+)
 
 MOVIES_PER_PAGE = 10
 
 
 async def movie_code_exists(session: AsyncSession, code: str) -> bool:
-    return await session.scalar(select(Movie.id).where(Movie.code == code)) is not None
+    """Return True only when an *active* movie already uses ``code``.
+
+    Inactive (soft-deleted) rows are ignored so a code can be reused after a
+    movie is removed. Hard-deleted rows are gone entirely, so their codes are
+    always free again.
+    """
+    return (
+        await session.scalar(
+            select(Movie.id).where(Movie.code == code, Movie.is_active.is_(True))
+        )
+        is not None
+    )
 
 
 async def create_movie(session: AsyncSession, **values: object) -> Movie:
@@ -33,6 +56,28 @@ async def soft_delete_movie(session: AsyncSession, movie_id: UUID) -> bool:
     movie.is_active = False
     await session.flush()
     return True
+
+
+async def hard_delete_movie(session: AsyncSession, movie_id: UUID) -> Movie | None:
+    """Permanently delete a movie and its Reels/ReelJobs (cascade).
+
+    The related ``reels`` and ``reel_jobs`` rows are removed explicitly first so
+    the delete works even when the database-level ``ON DELETE CASCADE`` is not
+    present (e.g. SQLite in tests). This guarantees the ``movies.code`` unique
+    value is freed and can be reused immediately.
+
+    Returns the deleted movie (so callers can clean up the channel post) or
+    ``None`` when the movie does not exist.
+    """
+    movie = await session.get(Movie, movie_id)
+    if movie is None:
+        return None
+    # Explicit cascade: remove dependent rows before the parent movie row.
+    await session.execute(delete(Reel).where(Reel.movie_id == movie_id))
+    await session.execute(delete(ReelJob).where(ReelJob.movie_id == movie_id))
+    await session.delete(movie)
+    await session.flush()
+    return movie
 
 
 async def list_movies(session: AsyncSession, page: int) -> tuple[list[Movie], int]:
@@ -73,17 +118,56 @@ async def list_channels(session: AsyncSession) -> list[MandatoryChannel]:
 
 
 async def dashboard_statistics(session: AsyncSession) -> dict[str, int]:
+    """Full admin statistics (§25): users, movies, reels, jobs, payments, ads."""
     now = datetime.now(UTC)
+
     async def count(statement):
         return await session.scalar(statement) or 0
+
     return {
+        # Users
         "users": await count(select(func.count()).select_from(User)),
         "active_users": await count(select(func.count()).select_from(User).where(User.is_active.is_(True))),
         "premium_users": await count(select(func.count()).select_from(User).where(User.premium_until > now)),
+        # Movies
+        "movies": await count(select(func.count()).select_from(Movie)),
         "active_movies": await count(select(func.count()).select_from(Movie).where(Movie.is_active.is_(True))),
+        # Channels
         "active_channels": await count(select(func.count()).select_from(MandatoryChannel).where(MandatoryChannel.is_active.is_(True))),
+        # Reels & jobs
+        "reels": await count(select(func.count()).select_from(Reel)),
+        "reel_jobs": await count(select(func.count()).select_from(ReelJob)),
+        "pending_jobs": await count(select(func.count()).select_from(ReelJob).where(ReelJob.status == ReelJobStatus.PENDING)),
+        "failed_jobs": await count(select(func.count()).select_from(ReelJob).where(ReelJob.status == ReelJobStatus.FAILED)),
+        # Premium payments
+        "pending_payments": await count(select(func.count()).select_from(PremiumPayment).where(PremiumPayment.status == PaymentStatus.PENDING)),
+        "approved_payments": await count(select(func.count()).select_from(PremiumPayment).where(PremiumPayment.status == PaymentStatus.APPROVED)),
+        "revenue": await count(select(func.coalesce(func.sum(PremiumPayment.amount), 0)).where(PremiumPayment.status == PaymentStatus.APPROVED)),
+        # Advertising
+        "ad_requests": await count(select(func.count()).select_from(AdCampaign)),
+        "pending_ads": await count(select(func.count()).select_from(AdCampaign).where(AdCampaign.status == AdStatus.PENDING)),
     }
 
 
 async def list_database_admins(session: AsyncSession) -> list[Admin]:
     return list(await session.scalars(select(Admin).order_by(Admin.telegram_id)))
+
+
+async def add_database_admin(session: AsyncSession, telegram_id: int) -> Admin:
+    """Add a Telegram id to the DB admin list (idempotent)."""
+    admin = await session.scalar(select(Admin).where(Admin.telegram_id == telegram_id))
+    if admin is None:
+        admin = Admin(telegram_id=telegram_id)
+        session.add(admin)
+        await session.flush()
+    return admin
+
+
+async def remove_database_admin(session: AsyncSession, telegram_id: int) -> bool:
+    """Remove a Telegram id from the DB admin list. Returns True when removed."""
+    admin = await session.scalar(select(Admin).where(Admin.telegram_id == telegram_id))
+    if admin is None:
+        return False
+    await session.delete(admin)
+    await session.flush()
+    return True

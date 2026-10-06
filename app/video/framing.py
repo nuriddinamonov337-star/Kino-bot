@@ -67,6 +67,10 @@ def detect_faces(frame) -> list[tuple[int, int, int, int]]:
         import cv2
     except ImportError:
         return []
+    # A partial/headless OpenCV build may lack the cascade API entirely; treat
+    # that the same as a missing dependency so callers fall back to the crop.
+    if not hasattr(cv2, "CascadeClassifier") or not hasattr(cv2, "data"):
+        return []
     cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
     if not cascade_path.exists():
         return []
@@ -76,6 +80,7 @@ def detect_faces(frame) -> list[tuple[int, int, int, int]]:
         return []
     boxes = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(40, 40))
     return [(int(x), int(y), int(w), int(h)) for x, y, w, h in boxes]
+
 
 
 def smooth_trajectory(positions: list[float], window: int = 15) -> list[float]:

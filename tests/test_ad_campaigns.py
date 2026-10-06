@@ -1,4 +1,14 @@
-"""Tests for the paid advertising campaign system (§12)."""
+"""Tests for the paid advertising campaign system (§12).
+
+Covers the six behaviours required by the spec:
+
+1. Tariff pricing and schedule sizes come from settings.
+2. The tariff menu labels are exact.
+3. ``next_post_time`` uses the fixed daily hours.
+4. The full campaign lifecycle (create → receipt → approve → post → complete).
+5. Campaigns complete after ``total_posts`` posts.
+6. Rejecting and listing campaigns works.
+"""
 
 from datetime import UTC, datetime
 
@@ -69,6 +79,17 @@ def test_next_post_time_uses_fixed_hours() -> None:
     # 22:00 → all slots passed, first slot next day.
     night = datetime(2026, 1, 1, 22, 0, tzinfo=UTC)
     assert next_post_time(AdTariff.WEEK, night) == datetime(2026, 1, 2, 9, 0, tzinfo=UTC)
+
+
+def test_next_post_time_respects_configured_hours() -> None:
+    settings = Settings(
+        bot_token="x",
+        database_url="sqlite+aiosqlite://",
+        reklama_post_hours_3=(10, 14, 20),
+        _env_file=None,
+    )
+    morning = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
+    assert next_post_time(AdTariff.WEEK, morning, settings) == datetime(2026, 1, 1, 10, 0, tzinfo=UTC)
 
 
 @pytest.mark.asyncio

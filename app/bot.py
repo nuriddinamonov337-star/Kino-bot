@@ -46,6 +46,7 @@ async def on_startup(application: Application) -> None:
     health: HealthServer | None = application.bot_data.get("health")
     if health is not None:
         await health.start()
+    from app.workers.ad_poster import start_worker as start_ad_poster
     from app.workers.reels import start_worker
 
     stop_event = asyncio.Event()
@@ -54,6 +55,13 @@ async def on_startup(application: Application) -> None:
     worker_task.add_done_callback(_log_worker_result)
     application.bot_data["reel_worker_task"] = worker_task
     logger.info("Reel background worker scheduled")
+
+    ad_stop_event = asyncio.Event()
+    application.bot_data["ad_poster_stop"] = ad_stop_event
+    ad_task = asyncio.create_task(start_ad_poster(ad_stop_event), name="ad-poster-worker")
+    ad_task.add_done_callback(_log_worker_result)
+    application.bot_data["ad_poster_task"] = ad_task
+    logger.info("Ad poster background worker scheduled")
 
 
 async def on_shutdown(application: Application) -> None:
@@ -75,6 +83,24 @@ async def on_shutdown(application: Application) -> None:
             logger.info("Reel worker shutdown cancelled")
         except Exception:
             logger.exception("Reel worker task raised during shutdown")
+    ad_task: asyncio.Task | None = application.bot_data.pop("ad_poster_task", None)
+    ad_stop: asyncio.Event | None = application.bot_data.pop("ad_poster_stop", None)
+    if ad_stop is not None:
+        ad_stop.set()
+    if ad_task is not None:
+        try:
+            await asyncio.wait_for(asyncio.shield(ad_task), timeout=WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("Ad poster worker did not stop within %ss; cancelling", WORKER_SHUTDOWN_TIMEOUT_SECONDS)
+            ad_task.cancel()
+            try:
+                await ad_task
+            except (asyncio.CancelledError, Exception):
+                logger.exception("Ad poster worker task ended with error after cancel")
+        except asyncio.CancelledError:
+            logger.info("Ad poster worker shutdown cancelled")
+        except Exception:
+            logger.exception("Ad poster worker task raised during shutdown")
     health: HealthServer | None = application.bot_data.get("health")
     if health is not None:
         await health.stop()

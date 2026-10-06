@@ -7,11 +7,13 @@ from telegram.ext import ContextTypes
 
 from app.database.session import Database
 from app.handlers.access import grant_or_request_subscription
+from app.keyboards.menu import main_menu
 from app.services.premium import is_premium_active
 from app.services.users import register_or_update_user
 
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """§24: minimal profile — name, id and premium status only."""
     if not await grant_or_request_subscription(update, context):
         return
     message, user = update.effective_message, update.effective_user
@@ -22,7 +24,10 @@ async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         async with session.begin():
             db_user = await register_or_update_user(session, user)
     if is_premium_active(db_user) and db_user.premium_until is not None:
-        premium = f"💎 Premium: {db_user.premium_until.astimezone(UTC):%d.%m.%Y %H:%M}"
+        premium = f"💎 Premium: {db_user.premium_until.astimezone(UTC):%d.%m.%Y}"
     else:
         premium = "💎 Premium: yo‘q"
-    await message.reply_text(f"👤 Profil\n\nIsm: {db_user.first_name}\nID: {db_user.telegram_id}\n{premium}")
+    await message.reply_text(
+        f"👤 {db_user.first_name}\n🆔 {db_user.telegram_id}\n{premium}",
+        reply_markup=main_menu(),
+    )

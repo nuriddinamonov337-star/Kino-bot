@@ -13,15 +13,15 @@ from app.config import get_settings
 from app.database.models import Movie
 from app.database.session import Database
 from app.handlers.admin_auth import admin_access
-from app.keyboards.admin import CANCEL, cancel, confirm_movie_delete, movie_menu, source_choice
+from app.keyboards.admin import CANCEL, cancel, confirm_movie_delete, movie_menu, movie_preview, source_choice
 from app.queue import JobQueue
-from app.services.admin import create_movie, get_movie_by_code, movie_code_exists, soft_delete_movie
+from app.services.admin import create_movie, get_movie_by_code, hard_delete_movie, movie_code_exists
 from app.services.reels import create_reel_job_if_absent
 from app.utils.sanitize import sanitize_error
 from app.video.downloader import DownloadError, download_movie_source, validate_source_url
 
 logger = logging.getLogger(__name__)
-SOURCE, CODE, TITLE, DESCRIPTION, POSTER = range(5)
+SOURCE, CODE, TITLE, DESCRIPTION, POSTER, PREVIEW = range(6)
 DELETE_CODE, DELETE_CONFIRM = range(10, 12)
 MAX_CODE, MAX_TITLE, MAX_DESCRIPTION = 20, 500, 4000
 
@@ -61,7 +61,11 @@ async def receive_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     message = update.effective_message
     if message is None or message.video is None: return SOURCE
     draft = _draft(context)
-    draft.update(telegram_file_id=message.video.file_id, main_channel_message_id=getattr(message, "forward_from_message_id", None) or message.message_id)
+    draft.update(
+        telegram_file_id=message.video.file_id,
+        telegram_file_unique_id=getattr(message.video, "file_unique_id", None),
+        main_channel_message_id=getattr(message, "forward_from_message_id", None) or message.message_id,
+    )
     await message.reply_text("Kino kodi? (faqat raqam, 20 belgigacha)", reply_markup=cancel())
     return CODE
 
@@ -110,7 +114,14 @@ async def receive_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             )
     except DownloadError as exc:
         logger.warning("URL movie download failed: %s", sanitize_error(str(exc)))
-        await progress.edit_text(f"❌ Video yuklanmadi: {exc}. Boshqa URL yuboring.")
+        await progress.edit_text(
+            "❌ URL yuklanmadi.\n\n"
+            f"Sabab: {sanitize_error(str(exc))}\n\n"
+            "Iltimos:\n"
+            "• Faqat ochiq va ruxsat etilgan MP4 yoki HLS URL'larni yuboring.\n"
+            "• DRM yoki Cloudflare himoyasi bo'lgan saytlar ishlamaydi.\n"
+            "• Yoki videoni to'g'ridan-to'g'ri forward qiling."
+        )
         return SOURCE
     except TelegramError as exc:
         logger.exception("Telegram upload failed for URL movie")
@@ -191,7 +202,26 @@ async def _publish_movie_to_main_channel(context: ContextTypes.DEFAULT_TYPE, *, 
         return None
 
 
+def _preview_text(draft: dict[str, object]) -> str:
+    """Render the collected draft for admin confirmation (no DB write yet)."""
+    title = str(draft.get("title") or "—")
+    code = str(draft.get("code") or "—")
+    description = draft.get("description")
+    has_video = bool(draft.get("telegram_file_id") or draft.get("source_url"))
+    lines = [
+        "🎬 Kino nomi: " + title,
+        "🔢 Kodi: " + code,
+        "📝 Tavsif: " + (str(description) if description else "—"),
+        "🖼 Poster: " + ("bor" if draft.get("poster_file_id") else "yo‘q"),
+        "🎞 Video: " + ("mavjud" if has_video else "yo‘q"),
+        "",
+        "Saqlashni tasdiqlaysizmi?",
+    ]
+    return "\n".join(lines)
+
+
 async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Collect the poster and show a preview. Nothing is written to the DB yet."""
     if not await _allowed(update, context): return ConversationHandler.END
     message = update.effective_message
     draft = _draft(context)
@@ -200,6 +230,21 @@ async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     elif (message.text or "").strip() != "-":
         await message.reply_text("Poster uchun rasm yuboring yoki '-' yuboring.")
         return POSTER
+    await message.reply_text(_preview_text(draft), reply_markup=movie_preview())
+    return PREVIEW
+
+
+async def save_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Persist the draft only after the admin presses 'Saqlash'."""
+    if not await _allowed(update, context): return ConversationHandler.END
+    query = update.callback_query
+    if query is None: return ConversationHandler.END
+    await query.answer()
+    draft = _draft(context)
+    if not draft.get("code") or not draft.get("title"):
+        await query.edit_message_text("Ma’lumot to‘liq emas. Qaytadan boshlang.", reply_markup=movie_menu())
+        context.user_data.pop("admin_movie_draft", None)
+        return ConversationHandler.END
     database: Database = context.application.bot_data["database"]
     try:
         async with database.session() as session:
@@ -209,11 +254,13 @@ async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 saved = {"id": movie.id, "code": movie.code, "title": movie.title, "description": movie.description, "poster_file_id": movie.poster_file_id, "telegram_file_id": movie.telegram_file_id}
     except IntegrityError:
         logger.exception("Movie creation duplicate or integrity failure")
-        await message.reply_text("Bu kod allaqachon mavjud. Boshqa kod yuboring.")
-        return CODE
+        await query.edit_message_text("Bu kod allaqachon mavjud. Boshqa kod yuboring.", reply_markup=movie_menu())
+        context.user_data.pop("admin_movie_draft", None)
+        return ConversationHandler.END
     except Exception:
         logger.exception("Movie creation failed")
-        await message.reply_text("Kino saqlanmadi. Qayta urinib ko‘ring.")
+        await query.edit_message_text("Kino saqlanmadi. Qayta urinib ko‘ring.", reply_markup=movie_menu())
+        context.user_data.pop("admin_movie_draft", None)
         return ConversationHandler.END
     context.user_data.pop("admin_movie_draft", None)
     queue: JobQueue | None = context.application.bot_data.get("queue")
@@ -243,7 +290,7 @@ async def finish_movie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         extra += " Kanalga post yuborildi."
     else:
         extra += " ⚠️ Kanalga post yuborilmadi (logni tekshiring)."
-    await message.reply_text(f"✅ Kino muvaffaqiyatli saqlandi.{extra}", reply_markup=movie_menu())
+    await query.edit_message_text(f"✅ Kino muvaffaqiyatli saqlandi.{extra}", reply_markup=movie_menu())
     return ConversationHandler.END
 
 
@@ -271,7 +318,21 @@ async def receive_delete_code(update: Update, context: ContextTypes.DEFAULT_TYPE
     return DELETE_CONFIRM
 
 
+async def _delete_main_channel_post(context: ContextTypes.DEFAULT_TYPE, message_id: int | None) -> bool:
+    """Delete the movie's post from MAIN_CHANNEL. Returns True on success."""
+    channel_id = get_settings().main_channel_id
+    if channel_id is None or message_id is None:
+        return False
+    try:
+        await context.bot.delete_message(chat_id=channel_id, message_id=message_id)
+        return True
+    except TelegramError as exc:
+        logger.warning("Main channel post delete failed (message_id=%s): %s", message_id, sanitize_error(str(exc)))
+        return False
+
+
 async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Hard-delete the movie, its Reels/ReelJobs, and its main-channel post."""
     if not await _allowed(update, context): return ConversationHandler.END
     query = update.callback_query
     movie_id = context.user_data.get("admin_delete_movie_id")
@@ -279,16 +340,43 @@ async def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("So‘rov yaroqsiz.", show_alert=True)
         return ConversationHandler.END
     database: Database = context.application.bot_data["database"]
+    channel_message_id: int | None = None
+    deleted = None
     try:
         async with database.session() as session:
             async with session.begin():
-                deleted = await soft_delete_movie(session, movie_id)
-    except Exception:
-        logger.exception("Movie soft delete failed")
-        await query.answer("Xatolik yuz berdi.", show_alert=True)
+                deleted = await hard_delete_movie(session, movie_id)
+                if deleted is not None:
+                    channel_message_id = deleted.main_channel_message_id
+    except IntegrityError as exc:
+        # Foreign-key or constraint failure: the transaction is rolled back by
+        # the ``session.begin()`` context manager, so nothing is left half-done.
+        logger.exception("Movie hard delete hit an integrity error")
+        await query.answer()
+        await query.edit_message_text(
+            "❌ Kinoni o‘chirib bo‘lmadi (bog‘liq yozuvlar bilan ziddiyat).\n"
+            f"Sabab: {sanitize_error(str(exc))[:200]}\n"
+            "Iltimos, qayta urinib ko‘ring yoki administratorga murojaat qiling.",
+            reply_markup=movie_menu(),
+        )
         return ConversationHandler.END
+    except Exception as exc:
+        logger.exception("Movie hard delete failed")
+        await query.answer()
+        await query.edit_message_text(
+            f"❌ O‘chirishda xatolik yuz berdi: {sanitize_error(str(exc))[:200]}",
+            reply_markup=movie_menu(),
+        )
+        return ConversationHandler.END
+    context.user_data.pop("admin_delete_movie_id", None)
+    if deleted is None:
+        await query.answer()
+        await query.edit_message_text("Kino topilmadi yoki avval o‘chirilgan.", reply_markup=movie_menu())
+        return ConversationHandler.END
+    post_removed = await _delete_main_channel_post(context, channel_message_id)
+    extra = " Kanal posti ham o‘chirildi." if post_removed else ""
     await query.answer()
-    await query.edit_message_text("✅ Kino faolsizlantirildi." if deleted else "Kino topilmadi yoki avval o‘chirilgan.", reply_markup=movie_menu())
+    await query.edit_message_text(f"✅ Kino butunlay o‘chirildi (reels va joblar bilan).{extra}", reply_markup=movie_menu())
     return ConversationHandler.END
 
 
@@ -303,7 +391,7 @@ async def cancel_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 movie_conversation = ConversationHandler(
     entry_points=[CallbackQueryHandler(begin_add, pattern=r"^adm:movie:add$")],
-    states={SOURCE: [CallbackQueryHandler(choose_video, pattern=r"^adm:movie:video$"), CallbackQueryHandler(choose_url, pattern=r"^adm:movie:url$"), MessageHandler(filters.VIDEO, receive_video), MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)], CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)], TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)], DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_description)], POSTER: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, finish_movie)]},
+    states={SOURCE: [CallbackQueryHandler(choose_video, pattern=r"^adm:movie:video$"), CallbackQueryHandler(choose_url, pattern=r"^adm:movie:url$"), MessageHandler(filters.VIDEO, receive_video), MessageHandler(filters.TEXT & ~filters.COMMAND, receive_url)], CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_code)], TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_title)], DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_description)], POSTER: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, finish_movie)], PREVIEW: [CallbackQueryHandler(save_movie, pattern=r"^adm:movie:save$")]},
     fallbacks=[CallbackQueryHandler(cancel_flow, pattern=rf"^{CANCEL}$")],
     name="admin_movie_add",
 )

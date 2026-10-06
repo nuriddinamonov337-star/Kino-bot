@@ -6,7 +6,20 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
 
@@ -28,34 +41,31 @@ class PaymentStatus(StrEnum):
     REJECTED = "rejected"
 
 
-class CampaignStatus(StrEnum):
-    PENDING = "pending"
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-
-
 class ReelJobStatus(StrEnum):
+
     PENDING = "pending"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
-class AdvertisingType(StrEnum):
-    SUBSCRIBERS = "subscribers"
-    BOT = "bot"
-    CHANNELS = "channels"
-    CONTACT = "contact"
+class AdTariff(StrEnum):
+    WEEK = "week"
+    MONTH = "month"
 
 
-class AdvertisingStatus(StrEnum):
+class AdStatus(StrEnum):
     PENDING = "pending"
-    IN_REVIEW = "in_review"
     APPROVED = "approved"
     REJECTED = "rejected"
+    ACTIVE = "active"
     COMPLETED = "completed"
-    CANCELLED = "cancelled"
+
+
+class AdContentType(StrEnum):
+    VIDEO = "video"
+    PHOTO = "photo"
+    DOCUMENT = "document"
 
 
 class UUIDPrimaryKeyMixin:
@@ -80,17 +90,20 @@ class User(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     premium_payments: Mapped[list[PremiumPayment]] = relationship(back_populates="user")
-    advertising_requests: Mapped[list[AdvertisingRequest]] = relationship(back_populates="user")
+    ad_campaigns: Mapped[list[AdCampaign]] = relationship(back_populates="user")
 
 
 class Movie(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     __tablename__ = "movies"
 
-    code: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    # ``code`` is unique only among *active* movies (partial unique index below),
+    # so a code can be reused after a movie is soft-deleted or hard-deleted.
+    code: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     poster_file_id: Mapped[str | None] = mapped_column(String(512))
     telegram_file_id: Mapped[str | None] = mapped_column(String(512))
+    telegram_file_unique_id: Mapped[str | None] = mapped_column(String(512))
     source_url: Mapped[str | None] = mapped_column(String(2048))
     main_channel_message_id: Mapped[int | None] = mapped_column(BigInteger)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
@@ -99,6 +112,16 @@ class Movie(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     )
     reels: Mapped[list[Reel]] = relationship(back_populates="movie", cascade="all, delete-orphan")
     reel_jobs: Mapped[list[ReelJob]] = relationship(back_populates="movie", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index(
+            "uq_movies_code_active",
+            "code",
+            unique=True,
+            postgresql_where=text("is_active"),
+            sqlite_where=text("is_active = 1"),
+        ),
+    )
 
 
 class MandatoryChannel(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
@@ -133,45 +156,41 @@ class PremiumPayment(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     user: Mapped[User] = relationship(back_populates="premium_payments")
 
 
-class SubscriberCampaign(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
-    __tablename__ = "subscriber_campaigns"
-    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    channel_title: Mapped[str] = mapped_column(String(255), nullable=False)
-    channel_link: Mapped[str] = mapped_column(String(2048), nullable=False)
-    target_count: Mapped[int] = mapped_column(Integer, nullable=False)
-    current_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    status: Mapped[CampaignStatus] = mapped_column(
-        Enum(CampaignStatus, name="campaign_status", values_callable=enum_values),
-        nullable=False,
-        default=CampaignStatus.PENDING,
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+class AdCampaign(Base):
 
+    """Paid advertising campaign posted repeatedly to the ad channel (§12)."""
 
-SubscriptionCampaign = SubscriberCampaign
+    __tablename__ = "ad_campaigns"
 
-
-class AdvertisingRequest(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
-    __tablename__ = "advertising_requests"
-
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
-    ad_type: Mapped[AdvertisingType] = mapped_column(
-        Enum(AdvertisingType, name="advertising_type", values_callable=enum_values), nullable=False
+    tariff: Mapped[AdTariff] = mapped_column(
+        Enum(AdTariff, name="ad_tariff", values_callable=enum_values), nullable=False
     )
-    status: Mapped[AdvertisingStatus] = mapped_column(
-        Enum(AdvertisingStatus, name="advertising_status", values_callable=enum_values),
+    price: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    times_per_day: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_posts: Mapped[int] = mapped_column(Integer, nullable=False)
+    posted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    content_type: Mapped[AdContentType] = mapped_column(
+        Enum(AdContentType, name="ad_content_type", values_callable=enum_values), nullable=False
+    )
+    file_id: Mapped[str] = mapped_column(String(512), nullable=False)
+    caption: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[AdStatus] = mapped_column(
+        Enum(AdStatus, name="ad_status", values_callable=enum_values),
         nullable=False,
-        default=AdvertisingStatus.PENDING,
+        default=AdStatus.PENDING,
     )
-    details: Mapped[str] = mapped_column(Text, nullable=False)
-    channel_title: Mapped[str | None] = mapped_column(String(255))
-    channel_link: Mapped[str | None] = mapped_column(String(2048))
-    target_count: Mapped[int | None] = mapped_column(Integer)
-    campaign_id: Mapped[UUID | None] = mapped_column(Uuid)
-    reviewed_by: Mapped[int | None] = mapped_column(BigInteger)
-    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    admin_note: Mapped[str | None] = mapped_column(Text)
-    user: Mapped[User] = relationship(back_populates="advertising_requests")
+    receipt_file_id: Mapped[str | None] = mapped_column(String(512))
+    admin_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    next_post_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    user: Mapped[User] = relationship(back_populates="ad_campaigns")
 
 
 class Broadcast(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
