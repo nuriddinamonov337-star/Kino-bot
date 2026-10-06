@@ -137,10 +137,13 @@ def channel_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton("➕ Kanal qo'shish", callback_data="adm:channel:add")],
+            [InlineKeyboardButton("📣 Majburiy kanal qo'shish", callback_data="adm:sub:add")],
             [InlineKeyboardButton("🗑 Kanalni o'chirish", callback_data="adm:channel:delete")],
+
             [InlineKeyboardButton("🔙 Orqaga", callback_data="adm:main")],
         ]
     )
+
 
 
 def confirm_channel_delete(channel_id: UUID) -> InlineKeyboardMarkup:

@@ -1,10 +1,16 @@
-"""User advertising ConversationHandler (§12).
+"""User advertising ConversationHandler (§12) and the mandatory-channel
+subscriber-growth service entry (§13).
 
-Flow:
-1. "📢 Reklama" → choose tariff (week/month).
-2. Confirm tariff → send ad content (video/photo/document + caption).
-3. Preview → confirm → pay (card details) → send receipt.
-4. Receipt is forwarded to admins with approve/reject buttons.
+Flow (§12 — paid advertising):
+1. "📢 Reklama" → submenu (Reklama berish / Majburiy kanal qo'shish).
+2. "📢 Reklama berish" → choose tariff (week/month).
+3. Confirm tariff → send ad content (video/photo/document + caption).
+4. Preview → confirm → pay (card details) → send receipt.
+5. Receipt is forwarded to admins with approve/reject buttons.
+
+Flow (§13 — mandatory-channel subscriber growth):
+1. "📢 Reklama" → "📣 Majburiy kanal qo'shish".
+2. Prices are shown; the user contacts the admin to order a package.
 """
 
 from __future__ import annotations
@@ -26,14 +32,15 @@ from app.config import get_settings
 from app.database.models import AdTariff
 from app.database.session import Database
 from app.handlers.access import grant_or_request_subscription
+from app.keyboards import main_menu
 from app.keyboards.advertising import (
     admin_review,
     cancel,
     preview_confirm,
+    subscriber_service_menu,
     tariff_confirm,
     tariff_menu,
 )
-from app.keyboards import main_menu
 from app.services.advertising import (
     attach_receipt,
     create_ad_campaign,
@@ -50,7 +57,15 @@ from app.services.users import register_or_update_user
 
 logger = logging.getLogger(__name__)
 
-CHOOSE_TARIFF, CONFIRM_TARIFF, RECEIVE_CONTENT, PREVIEW, RECEIVE_RECEIPT = range(5)
+# Conversation states
+(
+    CHOOSE_SERVICE,
+    CHOOSE_TARIFF,
+    CONFIRM_TARIFF,
+    RECEIVE_CONTENT,
+    PREVIEW,
+    RECEIVE_RECEIPT,
+) = range(6)
 
 TARIFF_BY_DATA = {
     "ad:tariff:week": AdTariff.WEEK,
@@ -72,7 +87,20 @@ def _tariff_summary(tariff: AdTariff) -> str:
     )
 
 
+def _subscriber_prices() -> dict[int, int]:
+    settings = get_settings()
+    return {
+        100: settings.mandatory_100_price,
+        500: settings.mandatory_500_price,
+        1000: settings.mandatory_1000_price,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# §12 — Paid advertising
+# --------------------------------------------------------------------------- #
 async def begin_advertising(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point for the "📢 Reklama" button: show the service submenu."""
     if not await grant_or_request_subscription(update, context):
         return ConversationHandler.END
     message = update.effective_message
@@ -262,8 +290,60 @@ async def cancel_advertising(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
+# --------------------------------------------------------------------------- #
+# §13 — Mandatory-channel subscriber growth (user entry)
+# --------------------------------------------------------------------------- #
+async def begin_subscriber_service(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show the subscriber-growth prices and the contact-admin button."""
+    if not await grant_or_request_subscription(update, context):
+        return ConversationHandler.END
+    message = update.effective_message
+    if message is None:
+        return ConversationHandler.END
+    prices = _subscriber_prices()
+    await message.reply_text(
+        "📣 Majburiy kanal qo‘shish\n\n"
+        "Kanal yoki guruhingizga yangi obunachilar yig‘ish xizmati.\n\n"
+        "💰 Narxlar:\n\n"
+        f"🔹 100 ta obunachi — {prices[100]:,} so'm\n"
+        f"🔹 500 ta obunachi — {prices[500]:,} so'm\n"
+        f"🔹 1000 ta obunachi — {prices[1000]:,} so'm\n\n"
+        "Batafsil ma'lumot uchun admin bilan bog‘laning.",
+        reply_markup=subscriber_service_menu(),
+    )
+    return ConversationHandler.END
+
+
+async def subscriber_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query is None:
+        return ConversationHandler.END
+    await query.answer()
+    settings = get_settings()
+    contact = f"@{settings.admin_username}" if settings.admin_username else "admin"
+    await query.edit_message_text(
+        f"👨‍💼 Admin: {contact}\n\n"
+        "Kerakli paketni tanlab, admin bilan kelishasiz."
+    )
+    return ConversationHandler.END
+
+
+async def subscriber_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query is not None:
+        await query.answer()
+        await query.edit_message_text("Bekor qilindi.")
+    return ConversationHandler.END
+
+
+# --------------------------------------------------------------------------- #
+# Handler registration
+# --------------------------------------------------------------------------- #
 advertising_conversation = ConversationHandler(
-    entry_points=[MessageHandler(filters.Regex(r"^📢 Reklama$"), begin_advertising)],
+    entry_points=[
+        MessageHandler(filters.Regex(r"^📢 Reklama$"), begin_advertising),
+        MessageHandler(filters.Regex(r"^📣 Majburiy kanal qo‘shish$"), begin_subscriber_service),
+    ],
     states={
         CHOOSE_TARIFF: [CallbackQueryHandler(choose_tariff, pattern=r"^ad:tariff:(week|month)$")],
         CONFIRM_TARIFF: [CallbackQueryHandler(confirm_tariff, pattern=r"^ad:continue$")],
@@ -273,6 +353,10 @@ advertising_conversation = ConversationHandler(
         PREVIEW: [CallbackQueryHandler(confirm_preview, pattern=r"^ad:confirm$")],
         RECEIVE_RECEIPT: [MessageHandler(filters.PHOTO, receive_receipt)],
     },
-    fallbacks=[CallbackQueryHandler(cancel_advertising, pattern=r"^ad:cancel$")],
+    fallbacks=[
+        CallbackQueryHandler(cancel_advertising, pattern=r"^ad:cancel$"),
+        CallbackQueryHandler(subscriber_contact, pattern=r"^sub:contact$"),
+        CallbackQueryHandler(subscriber_cancel, pattern=r"^sub:cancel$"),
+    ],
     name="advertising_request",
 )

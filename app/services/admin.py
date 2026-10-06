@@ -117,6 +117,69 @@ async def list_channels(session: AsyncSession) -> list[MandatoryChannel]:
     return list(await session.scalars(select(MandatoryChannel).order_by(MandatoryChannel.created_at.desc())))
 
 
+async def start_channel_campaign(
+    session: AsyncSession,
+    *,
+    chat_id: int,
+    title: str,
+    username: str | None,
+    invite_url: str | None,
+    target: int,
+    price: int,
+    now: datetime | None = None,
+) -> MandatoryChannel:
+    """Create/reactivate a mandatory channel and start a subscriber campaign.
+
+    The channel is upserted by ``chat_id`` (same rule as
+    :func:`create_mandatory_channel`) and its campaign counters are reset so a
+    fresh growth campaign begins immediately.
+    """
+    moment = now or datetime.now(UTC)
+    channel = await session.scalar(select(MandatoryChannel).where(MandatoryChannel.chat_id == chat_id))
+    if channel is None:
+        channel = MandatoryChannel(chat_id=chat_id, title=title, username=username, invite_url=invite_url)
+        session.add(channel)
+    else:
+        channel.title = title
+        channel.username = username
+        channel.invite_url = invite_url
+        channel.is_active = True
+    channel.campaign_target = target
+    channel.campaign_current = 0
+    channel.campaign_status = "active"
+    channel.campaign_price = price
+    channel.campaign_started_at = moment
+    channel.campaign_completed_at = None
+    await session.flush()
+    return channel
+
+
+async def increment_channel_campaign(
+    session: AsyncSession, channel: MandatoryChannel, now: datetime | None = None
+) -> bool:
+    """Count one new subscriber; return True when the campaign just completed."""
+    if channel.campaign_status != "active" or channel.campaign_target <= 0:
+        return False
+    channel.campaign_current += 1
+    if channel.campaign_current >= channel.campaign_target:
+        channel.campaign_status = "completed"
+        channel.campaign_completed_at = now or datetime.now(UTC)
+        await session.flush()
+        return True
+    await session.flush()
+    return False
+
+
+async def list_active_campaigns(session: AsyncSession) -> list[MandatoryChannel]:
+    """Return channels with an in-progress subscriber campaign."""
+    return list(
+        await session.scalars(
+            select(MandatoryChannel).where(MandatoryChannel.campaign_status == "active")
+        )
+    )
+
+
+
 async def dashboard_statistics(session: AsyncSession) -> dict[str, int]:
     """Full admin statistics (§25): users, movies, reels, jobs, payments, ads."""
     now = datetime.now(UTC)

@@ -131,6 +131,17 @@ class MandatoryChannel(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
     username: Mapped[str | None] = mapped_column(String(255))
     invite_url: Mapped[str | None] = mapped_column(String(2048))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Subscriber-growth campaign (§13). ``campaign_status`` is one of
+    # "none" (no campaign), "active" or "completed".
+    campaign_target: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    campaign_current: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    campaign_status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="none", server_default="none"
+    )
+    campaign_price: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    campaign_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    campaign_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
 
 
 class Admin(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):

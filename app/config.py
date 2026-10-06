@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     reklama_month_times_per_day: int = 5
     reklama_post_hours_3: Annotated[tuple[int, ...], NoDecode] = (9, 15, 21)
     reklama_post_hours_5: Annotated[tuple[int, ...], NoDecode] = (9, 12, 15, 18, 21)
+    # Mandatory-channel subscriber-growth packages (§13)
+    mandatory_100_price: int = 15000
+    mandatory_500_price: int = 70000
+    mandatory_1000_price: int = 100000
+
 
     @field_validator(
         "admin_ids",

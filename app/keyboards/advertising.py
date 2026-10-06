@@ -1,10 +1,14 @@
-"""User and admin keyboards for the paid advertising system (§12)."""
+"""User and admin keyboards for the paid advertising system (§12) and the
+mandatory-channel subscriber-growth service (§13)."""
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.database.models import AdStatus
 
 
+# --------------------------------------------------------------------------- #
+# §12 — Paid advertising (user flow)
+# --------------------------------------------------------------------------- #
 def tariff_menu(week_price: int, month_price: int) -> InlineKeyboardMarkup:
     """Step 2: choose a tariff."""
     return InlineKeyboardMarkup(
@@ -88,3 +92,33 @@ def campaign_actions(campaign_id: int, status: AdStatus) -> InlineKeyboardMarkup
         )
     rows.append([InlineKeyboardButton("🔙 Ro‘yxat", callback_data="adm:ads")])
     return InlineKeyboardMarkup(rows)
+
+
+# --------------------------------------------------------------------------- #
+# §13 — Mandatory-channel subscriber growth (user flow)
+# --------------------------------------------------------------------------- #
+def subscriber_service_menu() -> InlineKeyboardMarkup:
+    """User-facing entry: contact admin or cancel."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("👨‍💼 Admin bilan bog‘lanish", callback_data="sub:contact")],
+            [InlineKeyboardButton("❌ Bekor qilish", callback_data="sub:cancel")],
+        ]
+    )
+
+
+# --------------------------------------------------------------------------- #
+# §13 — Mandatory-channel subscriber growth (admin flow)
+# --------------------------------------------------------------------------- #
+def subscriber_package_menu(prices: dict[int, int]) -> InlineKeyboardMarkup:
+    """Admin picks a subscriber package (100/500/1000)."""
+    rows = [
+        [InlineKeyboardButton(f"{target} ta — {price:,} so'm", callback_data=f"adm:sub:pkg:{target}")]
+        for target, price in prices.items()
+    ]
+    rows.append([InlineKeyboardButton("❌ Bekor qilish", callback_data="adm:sub:cancel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def subscriber_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Bekor qilish", callback_data="adm:sub:cancel")]])

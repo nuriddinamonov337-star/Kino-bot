@@ -6,7 +6,15 @@ from app.database.models import MandatoryChannel
 
 
 def main_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup([[KeyboardButton("💎 Premium"), KeyboardButton("📢 Reklama")], [KeyboardButton("👤 Profil")]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("💎 Premium"), KeyboardButton("📢 Reklama")],
+            [KeyboardButton("📣 Majburiy kanal qo‘shish")],
+            [KeyboardButton("👤 Profil")],
+        ],
+        resize_keyboard=True,
+    )
+
 
 
 def mandatory_subscription_keyboard(channels: tuple[MandatoryChannel, ...]) -> InlineKeyboardMarkup:

@@ -11,9 +11,11 @@ from telegram import Bot
 from telegram.error import TelegramError
 
 from app.database.models import MandatoryChannel
+from app.services.admin import increment_channel_campaign
 
 logger = logging.getLogger(__name__)
 MEMBER_STATUSES = {"member", "administrator", "creator", "owner"}
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,3 +67,23 @@ async def check_mandatory_subscriptions(bot: Bot, user_id: int, channels: list[M
         if str(status_value).lower() not in MEMBER_STATUSES:
             missing.append(channel)
     return SubscriptionCheck(tuple(missing), tuple(unavailable))
+
+
+async def count_campaign_subscribers(
+    session: AsyncSession, channels: list[MandatoryChannel]
+) -> list[MandatoryChannel]:
+    """Increment the subscriber counter of every active campaign channel.
+
+    Called once a user has been verified as subscribed to all mandatory
+    channels. Returns the channels whose campaign just completed so the caller
+    can notify the admin.
+    """
+    completed: list[MandatoryChannel] = []
+    for channel in channels:
+        if channel.campaign_status != "active" or channel.campaign_target <= 0:
+            continue
+        if await increment_channel_campaign(session, channel):
+            completed.append(channel)
+    return completed
+
+
