@@ -1,12 +1,24 @@
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
+htmlcov/
 .venv/
 venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+build/
+develop-eggs/
+.installed.cfg
+
 
 # Environment and secrets
 .env
